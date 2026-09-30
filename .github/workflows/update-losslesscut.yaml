@@ -1,0 +1,100 @@
+---
+
+# Checks weekly for a new LosslessCut release and opens a pull request
+#  updating the Dockerfile. The build/test workflows are then started on the
+#  pull request branch (pull requests created with the default token don't
+#  trigger workflows by themselves).
+#
+# Requires "Allow GitHub Actions to create and approve pull requests" in
+#  Settings -> Actions -> General -> Workflow permissions.
+
+name: Check for LosslessCut updates
+
+on:
+  schedule:
+    - cron: '17 6 * * 1' # Mondays, 06:17 UTC
+  workflow_dispatch: # will allow running manually
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write # to start the build/test workflows
+
+env:
+  BRANCH: update/losslesscut
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Compare versions
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current="$(sed -n 's/^ARG app_version="\(.*\)"/\1/p' Dockerfile)"
+          # Latest stable (non pre-release) version
+          latest="$(gh release view --repo mifi/lossless-cut --json tagName --jq .tagName | sed 's/^v//')"
+          echo "Current: ${current}, latest: ${latest}"
+          test -n "$current" && test -n "$latest"
+
+          newest="$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n 1)"
+          if [ "$latest" = "$current" ] || [ "$newest" != "$latest" ]; then
+            echo "Up to date"
+            echo "update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Make sure all the architectures we build are available
+          assets="$(gh release view "v${latest}" --repo mifi/lossless-cut --json assets --jq '.assets[].name')"
+          for arch in x64 arm64 armv7l; do
+            if ! echo "$assets" | grep -qx "LosslessCut-linux-${arch}.tar.bz2"; then
+              echo "::warning::LosslessCut ${latest} has no LosslessCut-linux-${arch}.tar.bz2, not updating"
+              echo "update=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          {
+            echo "update=true"
+            echo "current=${current}"
+            echo "latest=${latest}"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Update Dockerfile
+        if: steps.version.outputs.update == 'true'
+        run: |
+          sed -i \
+            -e 's/^ARG app_version=".*"/ARG app_version="${{ steps.version.outputs.latest }}"/' \
+            -e 's/^ARG image_revision=".*"/ARG image_revision="1"/' \
+            Dockerfile
+          git diff
+
+      - name: Create pull request
+        if: steps.version.outputs.update == 'true'
+        id: pr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: ${{ env.BRANCH }}
+          delete-branch: true
+          commit-message: Update LosslessCut to ${{ steps.version.outputs.latest }}
+          title: Update LosslessCut to ${{ steps.version.outputs.latest }}
+          body: |
+            Updates LosslessCut from ${{ steps.version.outputs.current }} to ${{ steps.version.outputs.latest }}.
+
+            Release notes: https://github.com/mifi/lossless-cut/releases/tag/v${{ steps.version.outputs.latest }}
+
+            The "Build and test" (amd64 smoke test) and "Deploy image to registry" (multi-arch build, nothing is pushed from this branch) workflows are started on this branch, their results show up as checks.
+            Merging publishes the new image.
+
+      - name: Start build and test workflows
+        if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run ci.yaml --ref "$BRANCH"
+          gh workflow run build-and-deploy.yaml --ref "$BRANCH"

@@ -5,4 +5,5 @@ GNUmakefile
 LICENSE
 *.md
 helper-scripts/*
-docker-compose.yaml
+docker-compose*.yaml
+smoke-test-output

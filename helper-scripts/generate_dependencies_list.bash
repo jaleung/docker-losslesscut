@@ -1,6 +1,9 @@
 #!/bin/bash
 
 # Generate a list of package dependencies to copy & paste into the Dockerfile 
+# Note the Dockerfile only lists top-level packages (their dependencies are
+#  pulled automatically), and the build fails if any library is missing (see
+#  the ldd check in the Dockerfile), which tells what needs to be added.
 
 # To get the list of libraries:
 #   (inside docker): $ ldd losslesscut |grep not\ found | awk '{print $1}'

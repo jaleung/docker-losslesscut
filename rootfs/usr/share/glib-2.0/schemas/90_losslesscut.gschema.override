@@ -1,0 +1,4 @@
+# Open the file chooser in the working directory (/storage, see /startapp.sh)
+#  instead of "Recent"
+[org.gtk.Settings.FileChooser]
+startup-mode='cwd'

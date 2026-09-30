@@ -4,10 +4,11 @@
 # $ make        - Build for the current platform (only supports amd64, armv7 and arm64 on linux)
 # $ make buildx - Build multiplatform images
 # $ make push   - Push multiplatform images to the registry
+# $ make test   - Run the smoke test against the image built by "make"
 
-IMAGE_NAME=outlyernet/losslesscut
+IMAGE_NAME=jaleung/docker-losslesscut
 TAG:=latest
-REGISTRY:=docker.io
+REGISTRY:=ghcr.io
 # Additional tags (passed verbatim to docker build), separated by spaces
 ADD_TAGS:=
 
@@ -19,8 +20,8 @@ platform:=$(shell test `uname -m` = 'x86_64' && echo 'amd64' ; \
 	 test `uname -m` = 'armv7l' && echo 'arm/v7' ; \
 	 )
 
-APP_VERSION:=$(shell grep '^ARG app_version=' Dockerfile | awk '{print $$2}' | cut -d= -f2)
-IMAGE_REVISION:=$(shell grep '^ARG image_revision=' Dockerfile | awk '{print $$2}' | cut -d= -f2)
+APP_VERSION:=$(shell grep '^ARG app_version=' Dockerfile | awk '{print $$2}' | cut -d= -f2 | tr -d '"')
+IMAGE_REVISION:=$(shell grep '^ARG image_revision=' Dockerfile | awk '{print $$2}' | cut -d= -f2 | tr -d '"')
 
 REV_SUFFIX:=-v$(IMAGE_REVISION)
 
@@ -58,6 +59,10 @@ buildx-%:
 print-tags:
 	@echo $(ALL_TAGS)
 
+# Start the image with NAS-like resource limits and check it works
+test:
+	helper-scripts/smoke-test.sh $(LABEL):$(TAG)
+
 # NOTE: The "buildx-noop" dependency is a way of passing no extra arguments to buildx-%
 buildx: buildx-noop
 
@@ -70,4 +75,4 @@ multiarch-builder:
 # Importing/exporting multiplatform images doesn't work (yet?)
 #load: buildx---load
 
-.PHONY: build buildx push # DO NOT mark as phony buildx-* rules
+.PHONY: build buildx push test # DO NOT mark as phony buildx-* rules
