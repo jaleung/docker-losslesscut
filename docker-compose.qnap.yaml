@@ -1,0 +1,62 @@
+---
+
+# LosslessCut for QNAP Container Station (Applications -> Create).
+#
+# Tuned for a small NAS shared with other services, e.g. a TS-453BT3
+#  (Intel Celeron J3455, 4 cores, Intel HD Graphics 500, up to 8GB RAM).
+#
+# Before creating the application, adjust the lines marked with CHANGE ME.
+# Then open http://<NAS IP>:5800 in a browser.
+# See the "QNAP Container Station" section of the README for details.
+
+name: losslesscut
+
+services:
+  losslesscut:
+    image: ghcr.io/jaleung/docker-losslesscut:latest
+    container_name: losslesscut
+    restart: unless-stopped
+    ports:
+      # Web UI. VNC (5900) is not published, the browser is enough
+      - 5800:5800/tcp
+    volumes:
+      # CHANGE ME: LosslessCut settings, logs, ... (create the folder first)
+      - /share/Container/losslesscut:/config:rw
+      # CHANGE ME: Your videos, shown as "Storage" in the file dialogs
+      - /share/Multimedia:/storage:rw
+    # Intel Quick Sync / VAAPI hardware decoding. If the container fails to
+    #  start with an error about /dev/dri, remove these two lines
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      # CHANGE ME: Owner of the files LosslessCut creates. Find your IDs by
+      #  connecting via SSH and running: id <your user name>
+      #  QNAP users usually start at uid 500, the "everyone" group is 100
+      USER_ID: "500"
+      GROUP_ID: "100"
+      # CHANGE ME: Your time zone, e.g. Europe/London, Asia/Hong_Kong
+      TZ: Etc/UTC
+      # Smaller screen = less work encoding the display on a small CPU
+      DISPLAY_WIDTH: "1600"
+      DISPLAY_HEIGHT: "900"
+      DARK_MODE: "1"
+      # Audio in the browser (enable it in the noVNC side menu too)
+      WEB_AUDIO: "1"
+      # Run with lower priority than QTS, file sharing and other containers
+      APP_NICENESS: "10"
+      # Restart LosslessCut if it crashes or runs out of memory
+      KEEP_APP_RUNNING: "1"
+      # auto: use the GPU if /dev/dri works. Set to 0 if you get a black
+      #  video or glitches
+      LOSSLESSCUT_GPU: auto
+    # Leave one core and most of the memory for QTS and other services
+    cpus: "3.0"
+    # Raise to 3g if you work with 4K files and see LosslessCut restarting
+    mem_limit: 2g
+    mem_reservation: 512m
+    # Keep container logs from filling the system volume
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

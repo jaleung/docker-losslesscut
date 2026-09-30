@@ -1,12 +1,13 @@
 ---
 
 # This is an example compose file, adjust to your needs
+# For a QNAP NAS (Container Station) see docker-compose.qnap.yaml
 
 name: losslesscut
 
 services:
   losslesscut:
-    image: outlyernet/losslesscut
+    image: ghcr.io/jaleung/docker-losslesscut:latest
     build: .
     restart: unless-stopped
     ports:
@@ -18,7 +19,15 @@ services:
       - ${HOME?}:/storage:rw
       # Alternative path matching the host
       - ${HOME}:${HOME}:rw
+    # Uncomment to enable hardware accelerated decoding (Intel/AMD GPUs)
+    #devices:
+    #  - /dev/dri:/dev/dri
     environment:
       WEB_AUDIO: ${WEB_AUDIO:-1}
       DARK_MODE: ${DARK_MODE:-1}
       SECURE_CONNECTION: ${SECURE_CONNECTION:-1}
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

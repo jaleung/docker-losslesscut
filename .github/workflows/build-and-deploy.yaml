@@ -1,107 +1,136 @@
 ---
 
-# Deploy to this repository and Docker Hub a multi-arch image
-# when the repository is tagged
-# Note on pull requests the image will be built but not actually pushed
+# Build a multi-arch image (amd64, arm64, armv7) and push it to the GitHub
+#  Container Registry (and optionally Docker Hub) when master is updated or
+#  the repository is tagged.
+# Manual runs on other branches only build, nothing is pushed. Changes are
+#  tested by the "Build and test" workflow (ci.yaml).
 
 name: Deploy image to registry
 
 on:
   push:
-    tags:
-      - '[0-9].*'
-  pull_request:
     branches:
       - master
+    tags:
+      - '[0-9]*'
+    paths-ignore: # not evaluated for tags
+      - README.md
+      - LICENSE
+      - .gitignore
+      - docker-compose*.yaml
+      - helper-scripts/**
   workflow_dispatch: # will allow running manually
 
-# This workflow relies on:
-# - Repository variables (accessible var vars.NAME)
+# Optional Docker Hub publishing relies on:
+# - Repository variables (accessible via vars.NAME)
 #   - DOCKERHUB_USERNAME
-#   - DOCKERHUB_IMAGE 
+#   - DOCKERHUB_IMAGE
 # - Repository secrets (accessible via secrets.NAME)
 #   - DOCKERHUB_TOKEN
+# Docker Hub is skipped when DOCKERHUB_USERNAME isn't set
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
-  # REGISTRY: ghcr.io # set below
-  IMAGE_NAME: ${{ github.repository }}
+  # Only publish from the default branch and tags
+  PUSH: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/') }}
+  DOCKERHUB: ${{ vars.DOCKERHUB_USERNAME != '' && vars.DOCKERHUB_IMAGE != '' }}
 
 jobs:
   build-multiarch-and-push:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-      packages: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
     steps:
-      - name: Define registry
-        if: ${{ github.server_url == 'https://github.com' }}
-        run: echo 'REGISTRY=ghcr.io' | tee -a $GITHUB_ENV 
-
-      - name: Redefine registry if not on GitHub # i.e. Forgejo, Gitea, ... They provide a similar environment
-        if: ${{ github.server_url != 'https://github.com' }}
-        run: echo ${{ github.server_url }} | sed 's#^https://#REGISTRY=#' | tee -a $GITHUB_ENV 
-      
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
+
+      - name: Define images
+        id: images
+        run: |
+          # i.e. ghcr.io on GitHub, the instance itself on Forgejo, Gitea, ...
+          registry="$(echo '${{ github.server_url }}' | sed -e 's#^https://##' -e 's#^github.com$#ghcr.io#')"
+          echo "registry=${registry}" | tee -a "$GITHUB_OUTPUT"
+          {
+            echo 'list<<EOF'
+            # Registries require lowercase names
+            echo "${registry}/${GITHUB_REPOSITORY,,}"
+            if [ "$DOCKERHUB" = true ]; then
+              echo 'docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_IMAGE }}'
+            fi
+            echo 'EOF'
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Read versions from the Dockerfile
+        id: version
+        run: |
+          app="$(sed -n 's/^ARG app_version="\(.*\)"/\1/p' Dockerfile)"
+          rev="$(sed -n 's/^ARG image_revision="\(.*\)"/\1/p' Dockerfile)"
+          test -n "$app" && test -n "$rev"
+          {
+            echo "app=${app}"
+            echo "major_minor=$(echo "$app" | cut -d. -f1-2)"
+            echo "major=$(echo "$app" | cut -d. -f1)"
+            echo "rev=${rev}"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      # Same tags as "make print-tags", plus git references
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.images.outputs.list }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=latest,enable=${{ env.PUSH }}
+            type=raw,value=${{ steps.version.outputs.app }}
+            type=raw,value=${{ steps.version.outputs.major_minor }}
+            type=raw,value=${{ steps.version.outputs.major }}
+            type=raw,value=${{ steps.version.outputs.app }}-v${{ steps.version.outputs.rev }}
+            type=raw,value=${{ steps.version.outputs.major_minor }}-v${{ steps.version.outputs.rev }}
+            type=raw,value=${{ steps.version.outputs.major }}-v${{ steps.version.outputs.rev }}
+            type=sha
+            type=ref,event=tag
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to container registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v4
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ${{ steps.images.outputs.registry }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Login to Docker Hub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        if: env.PUSH == 'true' && env.DOCKERHUB == 'true'
+        uses: docker/login-action@v4
         with:
           registry: docker.io
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-            docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_IMAGE }}
-          # FIXME: :latest wasn't being added by default althought it should??? https://github.com/docker/metadata-action?tab=readme-ov-file#latest-tag
-          #         adding a raw tag as a workaround
-          tags: |
-            type=raw,value=latest
-            type=sha
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=ref,event=tag
-            type=ref,event=branch,suffix=-branch
-      
-      - name: Prepare Docker Hub additional tags
-        id: dockerhub_tags
-        run: |
-          make print-tags \
-          | sed -e 's/^/extra_tags=/' \
-          | tee -a "$GITHUB_OUTPUT"
-      
-      - name: Create multiarch builder
-        run: make multiarch-builder
-      
-      # Decide whether we'll push
-      # \-> Don't push on pull requests
-      - name: Set-up action
-        id: action
-        run: |
-          if test ${{ github.event_name }} != 'pull_request' ; then
-            echo 'rule=push'
-          else
-            echo 'rule=buildx'
-          fi | tee -a "$GITHUB_OUTPUT"
 
       - name: Build/Push
-        # IMAGE_NAME must match the github repository name
-        run: |
-          make ${{ steps.action.outputs.rule }} \
-            ADD_TAGS="${{ steps.meta.outputs.tags }} ${{ steps.dockerhub_tags.outputs.extra_tags }}" \
-            REGISTRY=${{ env.REGISTRY }} \
-            IMAGE_NAME=${{ env.IMAGE_NAME }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          # Labels are defined in the Dockerfile
+          # Plain multi-arch manifest, for older Docker engines (e.g. on a NAS)
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=multiarch
+          cache-to: type=gha,scope=multiarch,mode=max

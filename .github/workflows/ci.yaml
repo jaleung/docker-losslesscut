@@ -1,60 +1,98 @@
 ---
-# Based on video "GitHub Packages. Containers in a GitHub repo?"" <https://www.youtube.com/watch?v=gqseP_wTZsk>
-# TODO: DockerHub integration, see e.g. https://github.com/docker/metadata-action
 
-# Builds for the current architecture on each push
+# Builds the image for amd64 and smoke tests it: the container is started with
+#  NAS-like resource limits, a test video is opened and a cut is exported.
+# Screenshots and logs are uploaded as an artifact.
+# The arm images are built too (emulated, too slow to run LosslessCut), which
+#  checks that no library is missing on those architectures.
 
-name: Build on push
+name: Build and test
 
 on:
   push:
-    branches:
-      - master
     paths-ignore:
       - README.md
       - LICENSE
-      - .github/workflows/*
       - .gitignore
-      - helper-scripts/*
+      - docker-compose*.yaml
+  pull_request:
   workflow_dispatch: # will allow running manually
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
-      
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=ref,event=tag
-            type=ref,event=branch,suffix=-branch
+        uses: actions/checkout@v7
 
-      # Standard build action:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
       - name: Build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
+          platforms: linux/amd64
+          load: true
           push: false
-          tags: ${{ steps.meta.outputs.tags }}
-          #labels: ${{ steps.meta.outputs.labels }}
+          tags: losslesscut:ci
+          cache-from: type=gha,scope=ci
+          cache-to: type=gha,scope=ci,mode=max
 
-      # Non-standard using the makefile:
-      #- name: Build
-      #  # IMAGE_NAME must match the github repository name
-      #  run: make REGISTRY=${{ env.REGISTRY }} IMAGE_NAME=${{ env.IMAGE_NAME }}
+      - name: Install VNC client for screenshots
+        run: pipx install vncdotool
+
+      - name: Smoke test
+        env:
+          OUT_DIR: ${{ runner.temp }}/smoke-test-output
+        run: helper-scripts/smoke-test.sh losslesscut:ci
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-output
+          path: ${{ runner.temp }}/smoke-test-output
+          if-no-files-found: ignore
+
+  build-arm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/arm64
+          - linux/arm/v7
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Cache scope
+        id: scope
+        run: echo "name=ci-${PLATFORM//\//-}" | tee -a "$GITHUB_OUTPUT"
+        env:
+          PLATFORM: ${{ matrix.platform }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: false
+          cache-from: type=gha,scope=${{ steps.scope.outputs.name }}
+          cache-to: type=gha,scope=${{ steps.scope.outputs.name }},mode=max

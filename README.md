@@ -3,20 +3,25 @@
 
 [LosslessCut]: https://github.com/mifi/lossless-cut
 
-[![Build on push](https://github.com/outlyer-net/docker-losslesscut/actions/workflows/ci.yaml/badge.svg)](https://github.com/outlyer-net/docker-losslesscut/actions/workflows/ci.yaml)
-[![Deploy image to registry](https://github.com/outlyer-net/docker-losslesscut/actions/workflows/build-and-deploy.yaml/badge.svg)](https://github.com/outlyer-net/docker-losslesscut/actions/workflows/build-and-deploy.yaml)
-
-![Docker Image Version (latest semver)](https://img.shields.io/docker/v/outlyernet/losslesscut?sort=semver)
-[![Docker Image Size](https://img.shields.io/docker/image-size/outlyernet/losslesscut/latest)](https://hub.docker.com/r/outlyernet/losslesscut/tags)
-[![GitHub](https://img.shields.io/github/license/outlyer-net/docker-losslesscut)](https://github.com/outlyer-net/docker-losslesscut/blob/master/LICENSE)
+[![Build and test](https://github.com/jaleung/docker-losslesscut/actions/workflows/ci.yaml/badge.svg)](https://github.com/jaleung/docker-losslesscut/actions/workflows/ci.yaml)
+[![Deploy image to registry](https://github.com/jaleung/docker-losslesscut/actions/workflows/build-and-deploy.yaml/badge.svg)](https://github.com/jaleung/docker-losslesscut/actions/workflows/build-and-deploy.yaml)
+[![GitHub](https://img.shields.io/github/license/jaleung/docker-losslesscut)](https://github.com/jaleung/docker-losslesscut/blob/master/LICENSE)
 
 This is a Docker container for [LosslessCut].
 
 The GUI of the application is accessed through a modern web browser (no installation or configuration needed on the client side) or via any VNC client.
 
+This is a fork of [outlyer-net/docker-losslesscut](https://github.com/outlyer-net/docker-losslesscut), updated to the current LosslessCut and tuned for small hosts shared with other services, such as a NAS:
+
+* Runs at a lower priority than the host's services and restarts LosslessCut if it crashes.
+* Works with Docker's default 64MB `/dev/shm`, no `--shm-size` needed.
+* Avoids CPU-heavy GPU emulation when there's no GPU, and uses the GPU (e.g. Intel Quick Sync) for decoding when `/dev/dri` is available.
+* A ready-to-use [QNAP Container Station](#qnap-container-station) setup.
+* Every change is smoke tested: the image is started with 3 CPUs and 2GB of memory, a video is opened and a cut is exported.
+
 ---
 
-[![LosslessCut logo](https://images.weserv.nl/?url=https://github.com/mifi/lossless-cut/raw/master/src/icon.svg&w=160)][LosslessCut]
+[![LosslessCut logo](https://images.weserv.nl/?url=https://github.com/mifi/lossless-cut/raw/master/src/renderer/src/icon.svg&w=160)][LosslessCut]
 
 **LosslessCut**\
 The swiss army knife of lossless video/audio editing 
@@ -26,32 +31,34 @@ The swiss army knife of lossless video/audio editing
 ## Table of Content
 
    * [Quick Start](#quick-start)
+   * [QNAP Container Station](#qnap-container-station)
    * [Usage](#usage)
       * [Environment Variables](#environment-variables)
       * [Data Volumes](#data-volumes)
       * [Ports](#ports)
+      * [Hardware Acceleration](#hardware-acceleration)
       * [Audio playback](#audio-playback)
+      * [Low Resource Hosts](#low-resource-hosts)
       * [Changing Parameters of a Running Container](#changing-parameters-of-a-running-container)
    * [Docker Compose File](#docker-compose-file)
    * [Docker Image Versioning](#docker-image-versioning)
    * [User/Group IDs](#usergroup-ids)
    * [Accessing the GUI](#accessing-the-gui)
    * [Security](#security)
-      * [Certificates](#certificates)
-      * [VNC Password](#vnc-password)
    * [Shell Access](#shell-access)
+   * [Maintenance](#maintenance)
    * [Support or Contact](#support-or-contact)
 
 ## Quick Start
 
 Launch the LosslessCut docker container with the following command:
 ```shell
-docker run --rm -d \
+docker run -d \
     --name=losslesscut \
     -p 5800:5800 \
     -v /path/to/data/losslesscut:/config:rw \
     -v $HOME:/storage:rw \
-    outlyernet/losslesscut
+    ghcr.io/jaleung/docker-losslesscut
 ```
 
 Where:
@@ -59,22 +66,54 @@ Where:
   - `$HOME`: This location contains files from your host that need to be accessible to the application.
 
 Browse to `http://your-host-ip:5800` to access the LosslessCut GUI.
-Files from the host appear under the `/storage` folder in the container.
+Files from the host appear under the `/storage` folder in the container, which is also where the file dialogs open.
 
 **Notes:**
 * This Docker command is given as an example and parameters should be adjusted to your needs.
-* The image is available in both Docker Hub as `outlyernet/losslesscut` and the GitHub Container Registry as `ghcr.io/outlyer-net/docker-losslesscut`
+* The image is available in the GitHub Container Registry as `ghcr.io/jaleung/docker-losslesscut`, for `amd64`, `arm64` and `armv7`.
 * For additional documentation see the [base image](https://github.com/jlesage/docker-baseimage-gui).
+
+## QNAP Container Station
+
+The file [`docker-compose.qnap.yaml`](docker-compose.qnap.yaml) is ready to be used with Container Station 3 (QTS 5 / QuTS hero).
+It's tuned for a small NAS such as the TS-453BT3 (Intel Celeron J3455, 4 cores, up to 8GB of memory): LosslessCut gets up to 3 CPU cores and 2GB of memory, runs with a lower priority than QTS, and uses the Intel GPU for decoding.
+
+1. **Make sure the image can be pulled.** Packages published to GHCR are private at first. Either:
+   * make it public, on GitHub: *your profile → Packages → docker-losslesscut → Package settings → Change visibility*, or
+   * in Container Station, *Registry → Add*, with `ghcr.io`, your GitHub user name and a [personal access token](https://github.com/settings/tokens) with the `read:packages` scope as the password.
+2. **Create a folder for the settings**, e.g. `Container/losslesscut` in File Station (`/share/Container/losslesscut`).
+3. **Find the user and group IDs** that should own the files LosslessCut creates. Enable SSH (*Control Panel → Network & File Services → Telnet / SSH*), connect, and run `id <your user name>`:
+   ```
+   uid=500(john) gid=100(everyone) groups=100(everyone),0(administrators)
+   ```
+   Use the `uid` as `USER_ID` and the `gid` as `GROUP_ID`. Avoid the `admin` user (uid 0), the application would run as root.
+4. **Create the application**: *Container Station → Applications → Create*, name it `losslesscut`, and paste the content of [`docker-compose.qnap.yaml`](docker-compose.qnap.yaml). Adjust the lines marked with `CHANGE ME`:
+   * the settings folder from step 2 and the share with your videos (`/share/Multimedia` by default),
+   * `USER_ID` and `GROUP_ID` from step 3,
+   * `TZ`, your [time zone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones).
+5. Browse to `http://<NAS IP>:5800`.
+
+If the application fails to start with an error about `/dev/dri`, your NAS has no usable GPU: remove the `devices:` section.
+
+**Checking hardware acceleration**: the container's log in Container Station shows `[startapp] GPU enabled (render node: /dev/dri/renderD128)` when the GPU is used. Over SSH, `docker exec losslesscut vainfo` should list the supported codecs (`VAProfileH264...`, `VAProfileHEVC...`). To also let LosslessCut's FFmpeg use it, set *Settings → FFmpeg hardware acceleration* to `vaapi` in LosslessCut. See [Hardware Acceleration](#hardware-acceleration) if something doesn't work.
+
+**Updating**: once a new image is published, pull it and recreate the container, e.g. over SSH:
+```shell
+docker pull ghcr.io/jaleung/docker-losslesscut:latest
+```
+then recreate the application in Container Station (or delete it and create it again with the same YAML). Settings are kept in the settings folder.
+
+See also [Low Resource Hosts](#low-resource-hosts).
 
 ## Usage
 
 ```shell
-docker run [--rm] [-d] \
+docker run [-d] \
     [--name=losslesscut] \
     [-e <VARIABLE_NAME>=<VALUE>]... \
     [-v <HOST_DIR>:<CONTAINER_DIR>[:PERMISSIONS]]... \
     [-p <HOST_PORT>:<CONTAINER_PORT>]... \
-    outlyernet/losslesscut
+    ghcr.io/jaleung/docker-losslesscut
 ```
 | Parameter | Description |
 |-----------|-------------|
@@ -90,6 +129,16 @@ docker run [--rm] [-d] \
 To customize some properties of the container, the following environment variables can be passed via the `-e` parameter (one for each variable).\
 Values of this parameter has the format `<VARIABLE_NAME>=<VALUE>`.
 
+Variables specific to this image:
+
+| Variable       | Description                                  | Default |
+|----------------|----------------------------------------------|---------|
+|`LOSSLESSCUT_GPU`| `auto`: use the GPU when `/dev/dri` is passed to the container and usable, `1`: always try to use the GPU, `0`: never use the GPU.  See [Hardware Acceleration](#hardware-acceleration). | `auto` |
+|`LOSSLESSCUT_DISABLE_NETWORKING`| When set to `1`, LosslessCut works offline: no update checks (updates come with new images). Set to `0` to download media from URLs. | `1` |
+|`LOSSLESSCUT_ARGS`| Additional [command line arguments](https://github.com/mifi/lossless-cut/blob/master/docs/cli.md) for LosslessCut, e.g. `--http-api` or files to open. | `""` |
+
+Common variables, provided by the [base image](https://github.com/jlesage/docker-baseimage-gui#environment-variables) (which has more):
+
 | Variable       | Description                                  | Default |
 |----------------|----------------------------------------------|---------|
 |`USER_ID`| ID of the user the application runs as.  See [User/Group IDs](#usergroup-ids) to better understand when this should be set. | `1000` |
@@ -98,19 +147,19 @@ Values of this parameter has the format `<VARIABLE_NAME>=<VALUE>`.
 |`UMASK`| Mask that controls how file permissions are set for newly created files. The value of the mask is in octal notation.  By default, the default umask value is `0022`, meaning that newly created files are readable by everyone, but only writable by the owner.  See the online umask calculator at http://wintelguy.com/umask-calc.pl. | `0022` |
 |`LANG`| Set the [locale](https://en.wikipedia.org/wiki/Locale_(computer_software)), which defines the application's language, **if supported**.  Format of the locale is `language[_territory][.codeset]`, where language is an [ISO 639 language code](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes), territory is an [ISO 3166 country code](https://en.wikipedia.org/wiki/ISO_3166-1#Current_codes) and codeset is a character set, like `UTF-8`.  For example, Australian English using the UTF-8 encoding is `en_AU.UTF-8`. | `en_US.UTF-8` |
 |`TZ`| [TimeZone](http://en.wikipedia.org/wiki/List_of_tz_database_time_zones) used by the container.  Timezone can also be set by mapping `/etc/localtime` between the host and the container. | `Etc/UTC` |
-|`KEEP_APP_RUNNING`| When set to `1`, the application will be automatically restarted when it crashes or terminates. | `0` |
-|`APP_NICENESS`| Priority at which the application should run.  A niceness value of -20 is the highest priority and 19 is the lowest priority.  The default niceness value is 0.  **NOTE**: A negative niceness (priority increase) requires additional permissions.  In this case, the container should be run with the docker option `--cap-add=SYS_NICE`. | `0` |
+|`KEEP_APP_RUNNING`| When set to `1`, the application will be automatically restarted when it crashes or terminates. | `1` (base image: `0`) |
+|`APP_NICENESS`| Priority at which the application (and the FFmpeg processes it starts) should run.  A niceness value of -20 is the highest priority and 19 is the lowest priority.  **NOTE**: A negative niceness (priority increase) requires additional permissions.  In this case, the container should be run with the docker option `--cap-add=SYS_NICE`. | `10` (base image: `0`) |
 |`INSTALL_PACKAGES`| Space-separated list of packages to install during the startup of the container.  Packages are installed from the repository of the Linux distribution this container is based on.  **ATTENTION**: Container functionality can be affected when installing a package that overrides existing container files (e.g. binaries). | `""` |
 |`CONTAINER_DEBUG`| Set to `1` to enable debug logging. | `0` |
 |`DISPLAY_WIDTH`| Width (in pixels) of the application's window. | `1920` |
 |`DISPLAY_HEIGHT`| Height (in pixels) of the application's window. | `1080` |
 |`DARK_MODE`| When set to `1`, dark mode is enabled for the application. | `0` |
 |`WEB_AUDIO`| When set to `1`, audio support is enabled, meaning that any audio produced by the application is played through the browser. Note that audio is not supported for VNC clients. | `0` |
+|`WEB_AUTHENTICATION`| When set to `1`, the GUI is protected by a login page when accessed with a browser. Requires `SECURE_CONNECTION`, see the [base image documentation](https://github.com/jlesage/docker-baseimage-gui#web-authentication). | `0` |
+|`WEB_FILE_MANAGER`| When set to `1`, a simple file manager (upload, download, rename, delete) is available in the web interface. | `0` |
 |`SECURE_CONNECTION`| When set to `1`, an encrypted connection is used to access the application's GUI (either via a web browser or VNC client).  See the [Security](#security) section for more details. | `0` |
-|`SECURE_CONNECTION_VNC_METHOD`| Method used to perform the secure VNC connection.  Possible values are `SSL` or `TLS`.  See the [Security](#security) section for more details. | `SSL` |
-|`SECURE_CONNECTION_CERTS_CHECK_INTERVAL`| Interval, in seconds, at which the system verifies if web or VNC certificates have changed.  When a change is detected, the affected services are automatically restarted.  A value of `0` disables the check. | `60` |
-|`WEB_LISTENING_PORT`| Port used by the web server to serve the UI of the application.  This port is used internally by the container and it is usually not required to be changed.  By default, a container is created with the default bridge network, meaning that, to be accessible, each internal container port must be mapped to an external port (using the `-p` or `--publish` argument).  However, if the container is created with another network type, changing the port used by the container might be useful to prevent conflict with other services/containers.  **NOTE**: a value of `-1` disables listening, meaning that the application's UI won't be accessible over HTTP/HTTPs. | `5800` |
-|`VNC_LISTENING_PORT`| Port used by the VNC server to serve the UI of the application.  This port is used internally by the container and it is usually not required to be changed.  By default, a container is created with the default bridge network, meaning that, to be accessible, each internal container port must be mapped to an external port (using the `-p` or `--publish` argument).  However, if the container is created with another network type, changing the port used by the container might be useful to prevent conflict with other services/containers.  **NOTE**: a value of `-1` disables listening, meaning that the application's UI won't be accessible over VNC. | `5900` |
+|`WEB_LISTENING_PORT`| Port used by the web server to serve the UI of the application.  This port is used internally by the container and it is usually not required to be changed.  **NOTE**: a value of `-1` disables listening, meaning that the application's UI won't be accessible over HTTP/HTTPs. | `5800` |
+|`VNC_LISTENING_PORT`| Port used by the VNC server to serve the UI of the application.  This port is used internally by the container and it is usually not required to be changed.  **NOTE**: a value of `-1` disables listening, meaning that the application's UI won't be accessible over VNC. | `5900` |
 |`VNC_PASSWORD`| Password needed to connect to the application's GUI.  See the [VNC Password](#vnc-password) section for more details. | `""` |
 |`ENABLE_CJK_FONT`| When set to `1`, open-source computer font `WenQuanYi Zen Hei` is installed.  This font contains a large range of Chinese/Japanese/Korean characters. | `0` |
 
@@ -123,8 +172,8 @@ Each mapping is specified with the following format:\
 
 | Container path  | Permissions | Description |
 |-----------------|-------------|-------------|
-|`/config`| rw | This is where the application stores its configuration, states, log and any files needing persistency. |
-|`/storage`| rw | This location contains files from your host that need to be accessible to the application. |
+|`/config`| rw | This is where the application stores its configuration, states, log and any files needing persistency. LosslessCut's own settings and log are in `/config/xdg/config/LosslessCut`. |
+|`/storage`| rw | This location contains files from your host that need to be accessible to the application. The file dialogs open here and it's bookmarked in their sidebar. |
 
 ### Ports
 
@@ -138,6 +187,21 @@ container cannot be changed, but you are free to use any port on the host side.
 | 5800 | Optional | Port to access the application's GUI via the web interface.  Mapping to the host is optional if access through the web interface is not wanted.  For a container not using the default bridge network, the port can be changed with the `WEB_LISTENING_PORT` environment variable. |
 | 5900 | Optional | Port to access the application's GUI via the VNC protocol.  Mapping to the host is optional if access through the VNC protocol is not wanted.  For a container not using the default bridge network, the port can be changed with the `VNC_LISTENING_PORT` environment variable. |
 
+### Hardware Acceleration
+
+Decoding video on the CPU is the most expensive part of previewing videos, especially HEVC (H.265) and 4K on a small CPU. With an Intel (Quick Sync) or AMD GPU, it can be done by the GPU instead:
+
+1. Pass the GPU to the container: `--device /dev/dri:/dev/dri` (or the `devices:` section of the compose files).
+2. With the default `LOSSLESSCUT_GPU=auto`, the GPU is used if it's accessible. The container log shows either `GPU enabled` or `GPU disabled`. Permissions of `/dev/dri` are handled by the base image, its checks are also in the log.
+3. `docker exec losslesscut vainfo` shows what the GPU can decode.
+4. Optionally, in LosslessCut, set *Settings → FFmpeg hardware acceleration* to `vaapi`, so that FFmpeg-assisted playback (for formats the player doesn't support) uses the GPU too.
+
+If videos show up black or glitched, set `LOSSLESSCUT_GPU=0`.
+
+Without a GPU, LosslessCut is started with `--disable-gpu`, which is cheaper than Chromium's default of emulating a GPU on the CPU.
+
+The VAAPI drivers (Intel and AMD) are only included in the `amd64` image.
+
 ### Audio playback
 
 Audio can be played when accessed via web browser.
@@ -147,6 +211,16 @@ To enable it set the environment variable `WEB_AUDIO` to `1`.
 You'll also need to enable audio from within the browser via the three-dots menu overlaid on the left hand of the window.
 
 See the [Environment Variables section](#environment-variables)
+
+### Low Resource Hosts
+
+The defaults of this image already suit hosts shared with other services (lower priority, automatic restarts, no dependency on `/dev/shm` size). Some more things that help:
+
+* **Limit CPU and memory** so LosslessCut can't starve other services: `--cpus 3 --memory 2g` (`cpus:` and `mem_limit:` in compose). 2GB is enough for HD videos, give it 3GB for 4K. If LosslessCut runs out of memory it's restarted automatically, and `docker inspect -f '{{.State.OOMKilled}}' losslesscut` tells if the whole container was killed.
+* **Use a smaller screen**: every pixel of `DISPLAY_WIDTH` × `DISPLAY_HEIGHT` has to be encoded and sent to the browser. `1600x900` or `1280x720` are noticeably lighter than `1920x1080`.
+* **Use the GPU** if there's one, see [Hardware Acceleration](#hardware-acceleration).
+* **In LosslessCut**, keep thumbnails and the waveform disabled for large files, and pause playback when not needed: most of the work of a lossless cut is copying data, which is cheap.
+* **Limit log sizes**, the compose files keep at most 30MB of container logs.
 
 ### Changing Parameters of a Running Container
 
@@ -170,9 +244,9 @@ docker rm losslesscut
 
 ## Docker Compose File
 
-An example [`docker-compose.yaml`](./blob/docker-compose.yaml) file is provided for use with [Docker Compose](https://docs.docker.com/compose/overview/).
+An example [`docker-compose.yaml`](docker-compose.yaml) file is provided for use with [Docker Compose](https://docs.docker.com/compose/), and [`docker-compose.qnap.yaml`](docker-compose.qnap.yaml) for a NAS with limited resources (see [QNAP Container Station](#qnap-container-station)).
 
-Make sure to adjust according to your needs.  Note that only mandatory network ports are part of the example.
+Make sure to adjust according to your needs.  Note that only mandatory network ports are part of the examples.
 
 ## Docker Image Versioning
 
@@ -185,10 +259,10 @@ Example tags:
 | Tag | Interpret as 
 |-----|-----------------------------------------------
 | `:latest` | Always points to the most up to date image
-| `:3.47.1` | LosslessCut v3.47.1
-| `:3.47`   | Latest image built with LosslessCut v3.47.x
+| `:3.69.0` | LosslessCut v3.69.0
+| `:3.69`   | Latest image built with LosslessCut v3.69.x
 | `:3`      | Latest image built with LosslessCut v3.x.y
-| `:3.47-v1`| First image built with LosslessCut v3.47.x
+| `:3.69-v1`| First image built with LosslessCut v3.69.x
 
 ## User/Group IDs
 
@@ -244,6 +318,8 @@ All HTTP accesses are automatically redirected to HTTPs.
 When using a VNC client, the VNC connection is performed over SSL.\
 Note that few VNC clients support this method.  [SSVNC] is one of them.
 
+To require a user name and password in the browser, enable `WEB_AUTHENTICATION` too (see the [base image documentation](https://github.com/jlesage/docker-baseimage-gui#web-authentication)). This is recommended if the port is reachable from outside your local network.
+
 [SSVNC]: http://www.karlrunge.com/x11vnc/ssvnc.html
 
 ### Certificates
@@ -294,6 +370,39 @@ docker exec -ti CONTAINER sh
 Where `CONTAINER` is the ID or the name of the container used during its
 creation (e.g. `losslesscut`).
 
+## Maintenance
+
+### Building and testing
+
+```shell
+make          # build for the current architecture
+make test     # smoke test the image built by "make" (needs Docker, and vncdotool for screenshots)
+make buildx   # build for amd64, arm64 and armv7
+```
+
+The smoke test ([`helper-scripts/smoke-test.sh`](helper-scripts/smoke-test.sh)) starts the image with 3 CPUs and 2GB of memory, waits for it to be healthy, checks libraries, flags, user and priority of LosslessCut, then opens a generated video and exports a cut through LosslessCut's HTTP API. Logs and screenshots are written to `smoke-test-output/`.
+
+The build itself fails if a library needed by LosslessCut or FFmpeg is missing, on every architecture.
+
+### GitHub Actions
+
+| Workflow | When | What |
+|----------|------|------|
+| [Build and test](.github/workflows/ci.yaml) | Every push and pull request | Builds for amd64 and runs the smoke test, and builds for arm64 and armv7. Screenshots and logs are available as an artifact of the run. |
+| [Deploy image to registry](.github/workflows/build-and-deploy.yaml) | Pushes to `master`, tags, manually | Builds for amd64, arm64 and armv7, and publishes the image to `ghcr.io/<owner>/docker-losslesscut` (and Docker Hub when the `DOCKERHUB_USERNAME` and `DOCKERHUB_IMAGE` variables and the `DOCKERHUB_TOKEN` secret are set). Manual runs on other branches only build. |
+| [Check for LosslessCut updates](.github/workflows/update-losslesscut.yaml) | Mondays, manually | Opens a pull request when a new LosslessCut version is released, and starts "Build and test" on it. Merging it publishes the new image. |
+
+For all of this to work on a fork:
+* Enable Actions in the *Actions* tab of the fork.
+* Allow the update check to open pull requests: *Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests*.
+* GitHub disables scheduled workflows after 60 days without activity in the repository, re-enable it in the *Actions* tab if that happens.
+
+### Updating LosslessCut manually
+
+1. Change `app_version` in the [`Dockerfile`](Dockerfile) and reset `image_revision` to `1` (bump `image_revision` instead when changing the image without changing LosslessCut).
+2. Run `make && make test`, or push and let the workflows do it.
+3. If the build fails because of a missing library, add the package providing it to the Dockerfile ([`helper-scripts/generate_dependencies_list.bash`](helper-scripts/generate_dependencies_list.bash) can help find it).
+
 ## Support or Contact
 
 Having troubles with the container or have questions?  Please
@@ -302,4 +411,4 @@ Having troubles with the container or have questions?  Please
 For other great Dockerized applications by *[jlesage][jlesage]*, see https://jlesage.github.io/docker-apps.
 
 [jlesage]: https://github.com/jlesage
-[create a new issue]: https://github.com/outlyer-net/docker-losslesscut/issues
+[create a new issue]: https://github.com/jaleung/docker-losslesscut/issues
