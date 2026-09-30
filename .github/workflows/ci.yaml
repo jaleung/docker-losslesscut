@@ -3,6 +3,8 @@
 # Builds the image for amd64 and smoke tests it: the container is started with
 #  NAS-like resource limits, a test video is opened and a cut is exported.
 # Screenshots and logs are uploaded as an artifact.
+# The arm images are built too (emulated, too slow to run LosslessCut), which
+#  checks that no library is missing on those architectures.
 
 name: Build and test
 
@@ -60,3 +62,37 @@ jobs:
           name: smoke-test-output
           path: ${{ runner.temp }}/smoke-test-output
           if-no-files-found: ignore
+
+  build-arm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/arm64
+          - linux/arm/v7
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Cache scope
+        id: scope
+        run: echo "name=ci-${PLATFORM//\//-}" | tee -a "$GITHUB_OUTPUT"
+        env:
+          PLATFORM: ${{ matrix.platform }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: false
+          cache-from: type=gha,scope=${{ steps.scope.outputs.name }}
+          cache-to: type=gha,scope=${{ steps.scope.outputs.name }},mode=max

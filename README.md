@@ -388,9 +388,9 @@ The build itself fails if a library needed by LosslessCut or FFmpeg is missing, 
 
 | Workflow | When | What |
 |----------|------|------|
-| [Build and test](.github/workflows/ci.yaml) | Every push and pull request | Builds for amd64 and runs the smoke test. Screenshots and logs are available as an artifact of the run. |
-| [Deploy image to registry](.github/workflows/build-and-deploy.yaml) | Pushes to `master`, tags, pull requests, manually | Builds for amd64, arm64 and armv7. Only pushes to `master` and tags publish the image to `ghcr.io/<owner>/docker-losslesscut` (and Docker Hub when the `DOCKERHUB_USERNAME` and `DOCKERHUB_IMAGE` variables and the `DOCKERHUB_TOKEN` secret are set). |
-| [Check for LosslessCut updates](.github/workflows/update-losslesscut.yaml) | Mondays, manually | Opens a pull request when a new LosslessCut version is released, and starts the other two workflows on it. Merging it publishes the new image. |
+| [Build and test](.github/workflows/ci.yaml) | Every push and pull request | Builds for amd64 and runs the smoke test, and builds for arm64 and armv7. Screenshots and logs are available as an artifact of the run. |
+| [Deploy image to registry](.github/workflows/build-and-deploy.yaml) | Pushes to `master`, tags, manually | Builds for amd64, arm64 and armv7, and publishes the image to `ghcr.io/<owner>/docker-losslesscut` (and Docker Hub when the `DOCKERHUB_USERNAME` and `DOCKERHUB_IMAGE` variables and the `DOCKERHUB_TOKEN` secret are set). Manual runs on other branches only build. |
+| [Check for LosslessCut updates](.github/workflows/update-losslesscut.yaml) | Mondays, manually | Opens a pull request when a new LosslessCut version is released, and starts "Build and test" on it. Merging it publishes the new image. |
 
 For all of this to work on a fork:
 * Enable Actions in the *Actions* tab of the fork.

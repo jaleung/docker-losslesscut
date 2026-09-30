@@ -3,8 +3,8 @@
 # Build a multi-arch image (amd64, arm64, armv7) and push it to the GitHub
 #  Container Registry (and optionally Docker Hub) when master is updated or
 #  the repository is tagged.
-# Pull requests and manual runs on other branches only build (the build fails
-#  if a library is missing on any architecture), nothing is pushed.
+# Manual runs on other branches only build, nothing is pushed. Changes are
+#  tested by the "Build and test" workflow (ci.yaml).
 
 name: Deploy image to registry
 
@@ -20,9 +20,6 @@ on:
       - .gitignore
       - docker-compose*.yaml
       - helper-scripts/**
-  pull_request:
-    branches:
-      - master
   workflow_dispatch: # will allow running manually
 
 # Optional Docker Hub publishing relies on:
@@ -39,11 +36,11 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 env:
   # Only publish from the default branch and tags
-  PUSH: ${{ github.event_name != 'pull_request' && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/')) }}
+  PUSH: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/') }}
   DOCKERHUB: ${{ vars.DOCKERHUB_USERNAME != '' && vars.DOCKERHUB_IMAGE != '' }}
 
 jobs:

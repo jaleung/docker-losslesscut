@@ -1,7 +1,7 @@
 ---
 
 # Checks weekly for a new LosslessCut release and opens a pull request
-#  updating the Dockerfile. The build/test workflows are then started on the
+#  updating the Dockerfile. The build/test workflow is then started on the
 #  pull request branch (pull requests created with the default token don't
 #  trigger workflows by themselves).
 #
@@ -88,13 +88,11 @@ jobs:
 
             Release notes: https://github.com/mifi/lossless-cut/releases/tag/v${{ steps.version.outputs.latest }}
 
-            The "Build and test" (amd64 smoke test) and "Deploy image to registry" (multi-arch build, nothing is pushed from this branch) workflows are started on this branch, their results show up as checks.
+            The "Build and test" workflow (amd64 smoke test, arm64/armv7 builds) is started on this branch, its results show up as checks.
             Merging publishes the new image.
 
-      - name: Start build and test workflows
+      - name: Start the build and test workflow
         if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run ci.yaml --ref "$BRANCH"
-          gh workflow run build-and-deploy.yaml --ref "$BRANCH"
+        run: gh workflow run ci.yaml --ref "$BRANCH"

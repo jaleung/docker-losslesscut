@@ -98,11 +98,16 @@ RUN LC_ALL=C.UTF-8 add-pkg --virtual build-schemas libglib2.0-bin \
     && chmod 0755 /startapp.sh /etc/cont-init.d/55-losslesscut.sh
 
 # Set app name, version and generate favicons
+# The icon is only available as SVG, which ImageMagick can't read by itself
 RUN set-cont-env APP_NAME "LosslessCut" \
     && set-cont-env APP_VERSION "${app_version}" \
     && set-cont-env DOCKER_IMAGE_VERSION "${image_revision}" \
-    && APP_ICON_URL="${app_icon}" \
-    && install_app_icon.sh "$APP_ICON_URL"
+    && LC_ALL=C.UTF-8 add-pkg --virtual build-icon ca-certificates curl librsvg2-bin \
+    && curl -sS -L -f -o /tmp/icon.svg "${app_icon}" \
+    && rsvg-convert -w 512 -h 512 -o /tmp/icon.png /tmp/icon.svg \
+    && install_app_icon.sh /tmp/icon.png \
+    && del-pkg build-icon \
+    && rm -f /tmp/icon.svg /tmp/icon.png
 
 # Defaults tuned for small, shared hosts such as a NAS:
 # - APP_NICENESS: lower priority than the host services (and ffmpeg inherits it)
