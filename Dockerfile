@@ -134,6 +134,8 @@ LABEL \
 
 # Slow CPUs (e.g. NAS) need a while to bring up Electron
 #  (WEB_LISTENING_PORT=-1 disables the web UI)
-HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 CMD \
+# --start-interval: check often while starting, so it's reported healthy soon
+#  (ignored by Docker < 25)
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --start-interval=10s --retries=3 CMD \
     pidof losslesscut >/dev/null \
     && { [ "${WEB_LISTENING_PORT:-5800}" = "-1" ] || nc -z 127.0.0.1 "${WEB_LISTENING_PORT:-5800}" ; }

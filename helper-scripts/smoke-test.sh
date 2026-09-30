@@ -119,7 +119,7 @@ docker exec "$NAME" sh -c '
 ' || fail "missing shared libraries"
 
 log "Checking ffmpeg"
-docker exec -e LD_LIBRARY_PATH=/LosslessCut/resources "$NAME" /LosslessCut/resources/ffmpeg -hide_banner -version | head -n 1
+docker exec -e LD_LIBRARY_PATH=/LosslessCut/resources "$NAME" /LosslessCut/resources/ffmpeg -hide_banner -version | sed -n 1p
 
 log "Checking the web UI"
 curl -fsS -o /dev/null "http://127.0.0.1:$WEB_PORT/" || fail "web UI not reachable"
@@ -140,7 +140,8 @@ echo "  uid: $uid, niceness: $nice"
 log "Waiting for the HTTP API"
 api_ready=
 for _ in $(seq 1 30); do
-    if api GET / 10 2>/dev/null | grep -q '^HTTP/1.1 200'; then
+    response="$(api GET / 10 2>/dev/null)" || true
+    if [[ "$response" == "HTTP/1.1 200"* ]]; then
         api_ready=1
         break
     fi
@@ -164,10 +165,16 @@ for attempt in 1 2 3; do
 done
 [[ -n "$exported" ]] || fail "export produced no file, see $OUT_DIR"
 echo "  exported: /storage/$exported"
-duration="$(docker exec -e LD_LIBRARY_PATH=/LosslessCut/resources "$NAME" /LosslessCut/resources/ffprobe \
-    -v error -show_entries format=duration -of default=nw=1:nk=1 "/storage/$exported")"
+# The file might still be being written
+duration=
+for _ in $(seq 1 30); do
+    duration="$(docker exec -e LD_LIBRARY_PATH=/LosslessCut/resources "$NAME" /LosslessCut/resources/ffprobe \
+        -v error -show_entries format=duration -of default=nw=1:nk=1 "/storage/$exported" 2>/dev/null)" || true
+    awk -v d="${duration:-0}" 'BEGIN { exit !(d > 1) }' && break
+    sleep 2
+done
 echo "  duration: ${duration}s"
-awk -v d="$duration" 'BEGIN { exit !(d > 1) }' || fail "exported file looks broken (duration: $duration)"
+awk -v d="${duration:-0}" 'BEGIN { exit !(d > 1) }' || fail "exported file looks broken (duration: ${duration:-unknown})"
 screenshot capture "$OUT_DIR/02-exported.png"
 
 log "Checking the file dialog"
