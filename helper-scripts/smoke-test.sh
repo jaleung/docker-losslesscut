@@ -177,8 +177,24 @@ echo "  duration: ${duration}s"
 awk -v d="${duration:-0}" 'BEGIN { exit !(d > 1) }' || fail "exported file looks broken (duration: ${duration:-unknown})"
 screenshot capture "$OUT_DIR/02-exported.png"
 
-log "Checking the file dialog"
-screenshot key ctrl-o pause 3 capture "$OUT_DIR/03-open-dialog.png" key esc
+if command -v vncdo >/dev/null; then
+    log "Checking the file dialog"
+    api POST /api/action/openFilesDialog 10 >/dev/null 2>&1 || fail "could not open the file dialog"
+    sleep 5
+    # Typing in the dialog searches the current folder. Closing it can take
+    #  several Esc while searching
+    screenshot capture "$OUT_DIR/03-open-dialog.png" \
+        type smoke pause 3 capture "$OUT_DIR/04-dialog-search.png" \
+        key esc pause 1 key esc pause 1 key esc pause 2
+    # GTK saves the file chooser settings when it's closed (GSETTINGS_BACKEND)
+    keyfile=/config/xdg/config/glib-2.0/settings/keyfile
+    for _ in $(seq 1 10); do
+        docker exec "$NAME" test -s "$keyfile" && break
+        sleep 1
+    done
+    docker exec "$NAME" test -s "$keyfile" || fail "the file dialog settings weren't saved to $keyfile"
+    docker exec "$NAME" cat "$keyfile" | sed 's/^/  /'
+fi
 
 log "Resource usage"
 docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}' "$NAME" \

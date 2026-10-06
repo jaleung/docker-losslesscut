@@ -36,6 +36,7 @@ The swiss army knife of lossless video/audio editing
       * [Environment Variables](#environment-variables)
       * [Data Volumes](#data-volumes)
       * [Ports](#ports)
+      * [Finding Files in Large Folders](#finding-files-in-large-folders)
       * [Hardware Acceleration](#hardware-acceleration)
       * [Audio playback](#audio-playback)
       * [Low Resource Hosts](#low-resource-hosts)
@@ -94,6 +95,8 @@ It's tuned for a small NAS such as the TS-453BT3 (Intel Celeron J3455, 4 cores, 
 5. Browse to `https://<NAS IP>:5800`. The compose file enables HTTPS with a self-signed certificate, so the browser shows a warning the first time: choose to continue (in Chrome/Edge: *Advanced → Proceed*).
 
 If the application fails to start with an error about `/dev/dri`, your NAS has no usable GPU: remove the `devices:` section.
+
+**Finding files**: in the *Open file* dialog, just start typing (or click the magnifier at the top right) to search the current folder, see [Finding Files in Large Folders](#finding-files-in-large-folders).
 
 **Copy and paste**: to copy and paste directly between your computer and LosslessCut (e.g. timecodes), use Chrome or Edge, open the side panel (the tab on the left edge), and enable *Settings → Sync with Host Clipboard*; allow clipboard access when the browser asks. This needs HTTPS (`SECURE_CONNECTION=1`, set in the compose file): over plain `http://` the switch isn't shown. Firefox and Safari don't support it, use the *Clipboard* box of the side panel instead. To get rid of the certificate warning, copy a certificate for the NAS (e.g. from myQNAPcloud) to `certs/web-privkey.pem` and `certs/web-fullchain.pem` in the settings folder, see [Certificates](#certificates).
 
@@ -174,7 +177,7 @@ Each mapping is specified with the following format:\
 
 | Container path  | Permissions | Description |
 |-----------------|-------------|-------------|
-|`/config`| rw | This is where the application stores its configuration, states, log and any files needing persistency. LosslessCut's own settings and log are in `/config/xdg/config/LosslessCut`. |
+|`/config`| rw | This is where the application stores its configuration, states, log and any files needing persistency. LosslessCut's own settings and log are in `/config/xdg/config/LosslessCut`, the file dialog's settings (sort order, size) in `/config/xdg/config/glib-2.0/settings/keyfile`. |
 |`/storage`| rw | This location contains files from your host that need to be accessible to the application. The file dialogs open here and it's bookmarked in their sidebar. |
 
 ### Ports
@@ -188,6 +191,16 @@ container cannot be changed, but you are free to use any port on the host side.
 |------|-----------------|-------------|
 | 5800 | Optional | Port to access the application's GUI via the web interface.  Mapping to the host is optional if access through the web interface is not wanted.  For a container not using the default bridge network, the port can be changed with the `WEB_LISTENING_PORT` environment variable. |
 | 5900 | Optional | Port to access the application's GUI via the VNC protocol.  Mapping to the host is optional if access through the VNC protocol is not wanted.  For a container not using the default bridge network, the port can be changed with the `VNC_LISTENING_PORT` environment variable. |
+
+### Finding Files in Large Folders
+
+The *Open file* dialog can search the folder it shows, which helps with folders holding hundreds of videos:
+
+* **Start typing**, or click the **magnifier** at the top right: the list only shows the files whose name contains what you typed. Case doesn't matter, and several words narrow it down, e.g. `paris 2024` finds `Holiday_Paris_2024-07.mp4`. Only the current folder is searched, not its subfolders.
+* Click the **magnifier** again to go back to the whole folder. Several files can be selected with **Ctrl**/**Shift**+click, they're opened as a batch.
+* **Click a column header** to sort, e.g. *Modified* twice for the newest files first. The sort order and the size of the dialog are remembered.
+
+*Open folder* (in the *File* menu) loads all the files of a folder in LosslessCut's batch list instead, which can be sorted but not searched.
 
 ### Hardware Acceleration
 
