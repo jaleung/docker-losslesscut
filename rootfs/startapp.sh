@@ -17,6 +17,10 @@ log() {
 # The GTK file chooser opens in the working directory
 cd /storage 2>/dev/null || cd "$HOME" || cd /
 
+# Save GTK settings (e.g. sort order and size of the file chooser) under
+#  $XDG_CONFIG_HOME, they'd be forgotten on restart otherwise
+export GSETTINGS_BACKEND="${GSETTINGS_BACKEND:-keyfile}"
+
 # - Sandboxing needs user namespaces, which Docker blocks, the container is
 #   the sandbox
 # - Docker gives /dev/shm only 64MB by default, which Chromium can exhaust with
