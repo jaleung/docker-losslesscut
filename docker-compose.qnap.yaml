@@ -6,7 +6,7 @@
 #  (Intel Celeron J3455, 4 cores, Intel HD Graphics 500, up to 8GB RAM).
 #
 # Before creating the application, adjust the lines marked with CHANGE ME.
-# Then open http://<NAS IP>:5800 in a browser.
+# Then open https://<NAS IP>:5800 in a browser (accept the certificate warning).
 # See the "QNAP Container Station" section of the README for details.
 
 name: losslesscut
@@ -36,6 +36,11 @@ services:
       GROUP_ID: "100"
       # CHANGE ME: Your time zone, e.g. Europe/London, Asia/Hong_Kong
       TZ: Etc/UTC
+      # HTTPS (self-signed certificate, accept the browser warning once).
+      #  Needed to copy and paste directly between your computer and
+      #  LosslessCut (Chrome/Edge: side panel -> Settings -> Sync with Host
+      #  Clipboard)
+      SECURE_CONNECTION: "1"
       # Smaller screen = less work encoding the display on a small CPU
       DISPLAY_WIDTH: "1600"
       DISPLAY_HEIGHT: "900"
