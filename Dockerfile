@@ -3,7 +3,7 @@
 
 ARG app_version="3.69.0"
 # Bump if publishing a new image with the same app_version, reset to 1 with new app versions
-ARG image_revision="2"
+ARG image_revision="3"
 # Pinned for reproducible builds, see https://hub.docker.com/r/jlesage/baseimage-gui/tags
 ARG baseimage="jlesage/baseimage-gui:debian-13-v4.14.0"
 # BUILDPLATFORM and TARGETPLATFORM are defined when using BuildKit (i.e. docker buildx)
@@ -44,6 +44,8 @@ ARG app_icon="https://raw.githubusercontent.com/mifi/lossless-cut/v${app_version
 #  See the helper script 'generate_dependencies_list.bash'
 # - libpulse0: audio via WEB_AUDIO (dlopen'ed, invisible to ldd)
 # - libgl1, libegl1: GL when the GPU is enabled (dlopen'ed by ANGLE)
+# - libnotify4: desktop notifications (dlopen'ed by Electron, e.g. "Export
+#   finished"), forwarded to the browser with WEB_NOTIFICATION
 RUN LC_ALL=C.UTF-8 add-pkg \
       libasound2t64 \
       libcups2t64 \
@@ -52,6 +54,7 @@ RUN LC_ALL=C.UTF-8 add-pkg \
       libgbm1 \
       libgl1 \
       libgtk-3-0t64 \
+      libnotify4 \
       libnss3 \
       libpulse0 \
       libx11-xcb1 \

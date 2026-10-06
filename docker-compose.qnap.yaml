@@ -41,6 +41,10 @@ services:
       #  LosslessCut (Chrome/Edge: side panel -> Settings -> Sync with Host
       #  Clipboard)
       SECURE_CONNECTION: "1"
+      # Browser notification (with the system's notification sound) when an
+      #  export is done. Allow notifications when the browser asks. Needs
+      #  SECURE_CONNECTION
+      WEB_NOTIFICATION: "1"
       # Smaller screen = less work encoding the display on a small CPU
       DISPLAY_WIDTH: "1600"
       DISPLAY_HEIGHT: "900"
