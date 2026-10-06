@@ -91,9 +91,11 @@ It's tuned for a small NAS such as the TS-453BT3 (Intel Celeron J3455, 4 cores, 
    * the settings folder from step 2 and the share with your videos (`/share/Multimedia` by default),
    * `USER_ID` and `GROUP_ID` from step 3,
    * `TZ`, your [time zone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones).
-5. Browse to `http://<NAS IP>:5800`.
+5. Browse to `https://<NAS IP>:5800`. The compose file enables HTTPS with a self-signed certificate, so the browser shows a warning the first time: choose to continue (in Chrome/Edge: *Advanced → Proceed*).
 
 If the application fails to start with an error about `/dev/dri`, your NAS has no usable GPU: remove the `devices:` section.
+
+**Copy and paste**: to copy and paste directly between your computer and LosslessCut (e.g. timecodes), use Chrome or Edge, open the side panel (the tab on the left edge), and enable *Settings → Sync with Host Clipboard*; allow clipboard access when the browser asks. This needs HTTPS (`SECURE_CONNECTION=1`, set in the compose file): over plain `http://` the switch isn't shown. Firefox and Safari don't support it, use the *Clipboard* box of the side panel instead. To get rid of the certificate warning, copy a certificate for the NAS (e.g. from myQNAPcloud) to `certs/web-privkey.pem` and `certs/web-fullchain.pem` in the settings folder, see [Certificates](#certificates).
 
 **Checking hardware acceleration**: the container's log in Container Station shows `[startapp] GPU enabled (render node: /dev/dri/renderD128)` when the GPU is used. Over SSH, `docker exec losslesscut vainfo` should list the supported codecs (`VAProfileH264...`, `VAProfileHEVC...`). To also let LosslessCut's FFmpeg use it, set *Settings → FFmpeg hardware acceleration* to `vaapi` in LosslessCut. See [Hardware Acceleration](#hardware-acceleration) if something doesn't work.
 
