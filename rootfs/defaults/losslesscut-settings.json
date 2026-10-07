@@ -1,0 +1,13 @@
+{
+  "outSegTemplate": "${FILENAME.replace(/\\[[^\\]]*\\]\\s*/g, '').toUpperCase()}-trimmed${EXT}",
+  "mergedFileTemplate": "${FILENAME.replace(/\\[[^\\]]*\\]\\s*/g, '').toUpperCase()}-trimmed${EXT}",
+  "cleanupChoices": {
+    "cleanupAfterExport": true,
+    "askForCleanup": false,
+    "trashTmpFiles": true,
+    "trashSourceFile": true,
+    "trashProjectFile": true,
+    "deleteIfTrashFails": true,
+    "closeFile": true
+  }
+}

@@ -1,0 +1,15 @@
+#!/bin/sh
+#
+# Segments from file names: create LosslessCut project files for videos named
+#  e.g. "New Video[10-20,30-end].mp4". See /opt/losslesscut-tools/filename-segments
+#
+
+set -u # Treat unset variables as an error.
+
+# Comma (or space) separated list of folders
+PATHS="$(echo "${LOSSLESSCUT_FILENAME_SEGMENTS_PATHS:-/storage}" | tr ',' ' ')"
+
+# shellcheck disable=SC2086
+exec /opt/losslesscut-tools/filename-segments watch $PATHS
+
+# vim:ft=sh:ts=4:sw=4:et:sts=4

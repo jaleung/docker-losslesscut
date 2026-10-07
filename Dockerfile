@@ -3,7 +3,7 @@
 
 ARG app_version="3.69.0"
 # Bump if publishing a new image with the same app_version, reset to 1 with new app versions
-ARG image_revision="3"
+ARG image_revision="4"
 # Pinned for reproducible builds, see https://hub.docker.com/r/jlesage/baseimage-gui/tags
 ARG baseimage="jlesage/baseimage-gui:debian-13-v4.14.0"
 # BUILDPLATFORM and TARGETPLATFORM are defined when using BuildKit (i.e. docker buildx)
@@ -46,13 +46,19 @@ ARG app_icon="https://raw.githubusercontent.com/mifi/lossless-cut/v${app_version
 # - libgl1, libegl1: GL when the GPU is enabled (dlopen'ed by ANGLE)
 # - libnotify4: desktop notifications (dlopen'ed by Electron, e.g. "Export
 #   finished"), forwarded to the browser with WEB_NOTIFICATION
+# - libglib2.0-bin: gio, used by LosslessCut to move files to the trash
+#   (cleanup after export, see rootfs/usr/local/bin/gio), and to compile the
+#   GTK settings schemas
+# - inotify-tools: watching for new videos (segments from file names)
 RUN LC_ALL=C.UTF-8 add-pkg \
+      inotify-tools \
       libasound2t64 \
       libcups2t64 \
       libdrm2 \
       libegl1 \
       libgbm1 \
       libgl1 \
+      libglib2.0-bin \
       libgtk-3-0t64 \
       libnotify4 \
       libnss3 \
@@ -94,11 +100,11 @@ COPY rootfs/ /
 
 # Make the GTK file chooser open in the working directory (/storage) instead of
 #  "Recent", see rootfs/usr/share/glib-2.0/schemas/
-RUN LC_ALL=C.UTF-8 add-pkg --virtual build-schemas libglib2.0-bin \
-    && glib-compile-schemas /usr/share/glib-2.0/schemas \
-    && del-pkg build-schemas \
+RUN glib-compile-schemas /usr/share/glib-2.0/schemas \
     && mkdir -p /storage \
-    && chmod 0755 /startapp.sh /etc/cont-init.d/55-losslesscut.sh
+    && chmod 0755 /startapp.sh /etc/cont-init.d/55-losslesscut.sh \
+        /etc/services.d/filename-segments/run /etc/services.d/filename-segments/disabled \
+        /opt/losslesscut-tools/filename-segments /usr/local/bin/gio
 
 # Set app name, version and generate favicons
 # The icon is only available as SVG, which ImageMagick can't read by itself
@@ -115,12 +121,20 @@ RUN set-cont-env APP_NAME "LosslessCut" \
 # Defaults tuned for small, shared hosts such as a NAS:
 # - APP_NICENESS: lower priority than the host services (and ffmpeg inherits it)
 # - KEEP_APP_RUNNING: restart LosslessCut if it crashes or is OOM-killed
-# - LOSSLESSCUT_*: see rootfs/startapp.sh and README
+# - SECURE_CONNECTION, WEB_NOTIFICATION: HTTPS, needed for direct copy/paste
+#   with the host clipboard and for notifications (e.g. "Export finished").
+#   WEB_NOTIFICATION=1 requires SECURE_CONNECTION=1: set both to 0 for HTTP
+# - LOSSLESSCUT_*: see rootfs/startapp.sh, rootfs/etc/services.d/ and README
 ENV \
     APP_NICENESS=10 \
     KEEP_APP_RUNNING=1 \
+    SECURE_CONNECTION=1 \
+    WEB_NOTIFICATION=1 \
     LOSSLESSCUT_GPU=auto \
     LOSSLESSCUT_DISABLE_NETWORKING=1 \
+    LOSSLESSCUT_DEFAULT_SETTINGS=1 \
+    LOSSLESSCUT_FILENAME_SEGMENTS=1 \
+    LOSSLESSCUT_FILENAME_SEGMENTS_PATHS=/storage \
     LOSSLESSCUT_ARGS=
 
 # /storage is intentionally not a VOLUME to avoid creating anonymous volumes

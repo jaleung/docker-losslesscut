@@ -1,0 +1,246 @@
+#!/bin/sh
+#
+# Segments from file names: for a video named e.g.
+#   New Video[6604.630613-9797.852513,10000-end].mp4
+# create the LosslessCut project file "New Video[...]-proj.llc" next to it,
+# so that LosslessCut loads these segments (parts to keep) when the video is
+# opened.
+#
+# - The [...] block must be right before the extension
+# - Ranges are "start-end" in seconds, separated by commas, spaces allowed.
+#   start can be 0 (beginning of the video), end can be "end" (end of the video,
+#   its duration is read with ffprobe)
+# - Anything else in the brackets: the file is ignored
+# - An existing project file is never overwritten
+# - Generated project files are marked, and removed if their video goes away
+#   before LosslessCut saved the project itself
+#
+# Usage:
+#   filename-segments parse NAME [DURATION]
+#                                    print the segments (JSON) of a file name,
+#                                    "end" is DURATION (left out without it)
+#   filename-segments generate FILE  create the project file of FILE if needed
+#   filename-segments remove-orphan FILE  remove the generated project file of
+#                                    a deleted video
+#   filename-segments scan DIR...    generate for all videos under DIR
+#   filename-segments watch DIR...   scan, then watch for new/renamed videos
+#
+
+set -u
+
+MARKER="docker-losslesscut filename-segments"
+EXTENSIONS="mp4 m4v mov mkv webm avi ts m2ts mts mpg mpeg vob flv wmv 3gp mxf ogv mp3 m4a aac flac wav ogg opus mka"
+POLL_INTERVAL="${LOSSLESSCUT_FILENAME_SEGMENTS_POLL_INTERVAL:-60}"
+FFPROBE="${LOSSLESSCUT_FFPROBE:-/LosslessCut/resources/ffprobe}"
+
+log() {
+    echo "$*"
+}
+
+# Hidden files/folders, and QNAP's @Recycle, .@__thumb, ...
+is_excluded() {
+    case "$1" in
+        */.*|*/@*|.*|@*) return 0 ;;
+    esac
+    return 1
+}
+
+is_video() {
+    ext="$(echo "${1##*.}" | tr '[:upper:]' '[:lower:]')"
+    [ "$ext" != "$1" ] || return 1
+    for e in $EXTENSIONS; do
+        [ "$e" = "$ext" ] && return 0
+    done
+    return 1
+}
+
+# Print the JSON segments for a file name (with or without extension).
+# Exit 1 when the name has no valid segments.
+# Usage: parse NAME [DURATION]
+parse() {
+    name="$(basename "$1")"
+    # Strip the extension
+    case "$name" in
+        *\].*) name="${name%.*}" ;;
+    esac
+    case "$name" in
+        *\[*\]) ;;
+        *) return 1 ;;
+    esac
+    spec="${name##*\[}"
+    spec="${spec%\]}"
+    printf '%s\n' "$spec" | awk -v duration="${2:-}" '
+        function num(s,    i, f) {
+            # Normalize for JSON: no leading zeros
+            i = s; f = ""
+            if (index(s, ".") > 0) { i = substr(s, 1, index(s, ".") - 1); f = substr(s, index(s, ".")) }
+            sub(/^0+/, "", i)
+            if (i == "") i = "0"
+            return i f
+        }
+        {
+            if ($0 ~ /[\[\]]/) exit 1
+            n = split($0, parts, ",")
+            if (n == 0) exit 1
+            out = ""
+            for (k = 1; k <= n; k++) {
+                p = tolower(parts[k])
+                gsub(/^[ \t]+|[ \t]+$/, "", p)
+                if (p !~ /^[0-9]+(\.[0-9]+)?[ \t]*-[ \t]*([0-9]+(\.[0-9]+)?|end)$/) exit 1
+                split(p, se, "-")
+                s = se[1]; e = se[2]
+                gsub(/[ \t]/, "", s); gsub(/[ \t]/, "", e)
+                if (e == "end") {
+                    # Without an end, LosslessCut makes it a marker, not a
+                    #  segment: the duration is needed
+                    if (duration == "") {
+                        seg = "{ \"start\": " num(s) ", \"name\": \"\" }"
+                    } else {
+                        if (duration + 0 <= s + 0) exit 1
+                        seg = "{ \"start\": " num(s) ", \"end\": " num(duration) ", \"name\": \"\" }"
+                    }
+                } else {
+                    if (e + 0 <= s + 0) exit 1
+                    seg = "{ \"start\": " num(s) ", \"end\": " num(e) ", \"name\": \"\" }"
+                }
+                out = out (k > 1 ? ",\n" : "") "    " seg
+            }
+            printf "[\n%s\n  ]\n", out
+            ok = 1
+        }
+        END { exit ok ? 0 : 1 }
+    '
+}
+
+# Duration of a media file in seconds, empty if unknown (e.g. still copying)
+probe_duration() {
+    LD_LIBRARY_PATH="$(dirname "$FFPROBE")" "$FFPROBE" -v error \
+        -show_entries format=duration -of default=nw=1:nk=1 "$1" 2>/dev/null \
+        | grep -E '^[0-9]+(\.[0-9]+)?$' | head -n 1
+}
+
+project_path() {
+    dir="$(dirname "$1")"
+    base="$(basename "$1")"
+    echo "$dir/${base%.*}-proj.llc"
+}
+
+generate() {
+    file="$1"
+    is_excluded "$file" && return 0
+    is_video "$file" || return 0
+    [ -f "$file" ] || return 0
+    parse "$file" >/dev/null || return 0
+    llc="$(project_path "$file")"
+    [ -e "$llc" ] && return 0
+    duration=
+    if basename "$file" | grep -qiE -- '-[[:space:]]*end[[:space:]]*[],]'; then
+        duration="$(probe_duration "$file")"
+        if [ -z "$duration" ]; then
+            log "WARNING: could not read the duration of $file (incomplete?), will retry"
+            return 0
+        fi
+    fi
+    segments="$(parse "$file" "$duration")" || return 0
+    tmp="$(dirname "$llc")/.$(basename "$llc").tmp.$$"
+    if ! printf '{\n  "version": 2,\n  "generatedBy": "%s",\n  "cutSegments": %s}\n' "$MARKER" "$segments" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        log "WARNING: could not write project file for $file"
+        return 0
+    fi
+    mv -f "$tmp" "$llc" && log "created $llc"
+}
+
+# Remove the project file generated for a video that no longer exists, unless
+# LosslessCut saved the project in the meantime (the marker is then gone)
+remove_orphan() {
+    file="$1"
+    is_excluded "$file" && return 0
+    is_video "$file" || return 0
+    [ -e "$file" ] && return 0
+    parse "$file" >/dev/null || return 0
+    llc="$(project_path "$file")"
+    if [ -f "$llc" ] && grep -q "\"generatedBy\": \"$MARKER\"" "$llc"; then
+        rm -f "$llc" && log "removed $llc (video gone)"
+    fi
+}
+
+# Generated project file whose video is gone (e.g. renamed while not watching)
+is_orphan_project() {
+    llc="$1"
+    grep -q "\"generatedBy\": \"$MARKER\"" "$llc" 2>/dev/null || return 1
+    prefix="${llc%-proj.llc}"
+    for video in "$prefix".*; do
+        [ "$video" != "$llc" ] && [ -f "$video" ] && is_video "$video" && return 1
+    done
+    return 0
+}
+
+scan() {
+    for dir in "$@"; do
+        [ -d "$dir" ] || continue
+        find "$dir" \( -name '.*' -o -name '@*' \) -prune \
+            -o -type f \( -name '*\].*' -o -name '*\]-proj.llc' \) -print 2>/dev/null \
+            | while IFS= read -r f; do
+                case "$f" in
+                    *\]-proj.llc)
+                        if is_orphan_project "$f"; then
+                            rm -f "$f" && log "removed $f (video gone)"
+                        fi
+                        ;;
+                    *) generate "$f" ;;
+                esac
+            done
+    done
+}
+
+watch() {
+    dirs=""
+    for d in "$@"; do
+        [ -d "$d" ] && dirs="$dirs $d"
+    done
+    if [ -z "$dirs" ]; then
+        log "no directory to watch ($*)"
+        exec sleep infinity
+    fi
+    # shellcheck disable=SC2086
+    set -- $dirs
+
+    log "scanning $*"
+    scan "$@"
+
+    if command -v inotifywait >/dev/null; then
+        log "watching $* for new videos"
+        # Events: "EVENTS|PATH"
+        # close_write: files being copied are only complete once closed
+        inotifywait -m -r -q \
+            -e create -e close_write -e moved_to -e moved_from -e delete \
+            --exclude '/[.@]' \
+            --format '%e|%w%f' "$@" \
+            | while IFS='|' read -r events path; do
+                case "$events" in
+                    *ISDIR*)
+                        case "$events" in CREATE*|MOVED_TO*) scan "$path" ;; esac ;;
+                    *CLOSE_WRITE*|*MOVED_TO*) generate "$path" ;;
+                    *DELETE*|*MOVED_FROM*) remove_orphan "$path" ;;
+                esac
+            done
+        log "WARNING: watching stopped (e.g. too many folders for the inotify limit), checking every ${POLL_INTERVAL}s instead"
+    fi
+
+    while true; do
+        sleep "$POLL_INTERVAL"
+        scan "$@"
+    done
+}
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+    parse) parse "$1" "${2:-}" ;;
+    generate) for f in "$@"; do generate "$f"; done ;;
+    remove-orphan) for f in "$@"; do remove_orphan "$f"; done ;;
+    scan) scan "$@" ;;
+    watch) watch "$@" ;;
+    *) echo "usage: $(basename "$0") parse NAME | generate FILE... | remove-orphan FILE... | scan DIR... | watch DIR..." >&2; exit 2 ;;
+esac

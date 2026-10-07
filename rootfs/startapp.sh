@@ -5,6 +5,7 @@
 # Environment (see README):
 #   LOSSLESSCUT_GPU                 auto (default), 1 or 0
 #   LOSSLESSCUT_DISABLE_NETWORKING  1 (default) or 0
+#   LOSSLESSCUT_DEFAULT_SETTINGS    1 (default) or 0
 #   LOSSLESSCUT_ARGS                extra command line arguments
 #
 
@@ -78,6 +79,28 @@ fi
 #  there's no browser in the container to open links with
 if is-bool-val-true "${LOSSLESSCUT_DISABLE_NETWORKING:-1}"; then
     set -- "$@" --disable-networking
+fi
+
+# Default settings of this image (output file names, cleanup after export),
+#  only for the settings the user hasn't changed
+DEFAULT_SETTINGS=/defaults/losslesscut-settings.json
+if is-bool-val-true "${LOSSLESSCUT_DEFAULT_SETTINGS:-1}" && [ -f "$DEFAULT_SETTINGS" ]; then
+    case " ${LOSSLESSCUT_ARGS:-} " in
+        *" --settings-json"*)
+            log "Default settings not applied: LOSSLESSCUT_ARGS has --settings-json"
+            ;;
+        *)
+            # LosslessCut's Electron, as Node.js
+            SETTINGS="$(ELECTRON_RUN_AS_NODE=1 /LosslessCut/losslesscut \
+                /opt/losslesscut-tools/settings-defaults.cjs \
+                "${XDG_CONFIG_HOME:-$HOME/.config}/LosslessCut/config.json" "$DEFAULT_SETTINGS")" \
+                || SETTINGS=
+            if [ -n "$SETTINGS" ] && [ "$SETTINGS" != "{}" ]; then
+                log "Applying default settings: $SETTINGS"
+                set -- "$@" "--settings-json=$SETTINGS"
+            fi
+            ;;
+    esac
 fi
 
 # User arguments go first: LosslessCut's argument parser lets an unknown flag
