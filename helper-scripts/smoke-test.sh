@@ -178,6 +178,15 @@ check_trashed() {
     echo "  trashed: $1"
 }
 
+# Usage: log_has PATTERN  (grep in the container log)
+# Not "docker logs | grep -q": grep exits at the first match, docker logs then
+#  gets SIGPIPE, which fails the pipeline with pipefail
+log_has() {
+    local logs
+    logs="$(docker logs "$NAME" 2>&1)"
+    grep -q -- "$1" <<< "$logs"
+}
+
 # Main LosslessCut process (Electron's children have --type=...)
 main_pid() {
     docker exec "$NAME" sh -c '
@@ -253,13 +262,13 @@ nice="$(docker exec "$NAME" awk '{print $19}' "/proc/$pid/stat")"
 echo "  uid: $uid, niceness: $nice"
 
 log "Checking the default settings"
-docker logs "$NAME" 2>&1 | grep -q "Applying default settings: .*trimmed.*cleanupAfterExport" \
+log_has "Applying default settings: .*trimmed.*cleanupAfterExport" \
     || fail "the image's default settings weren't applied"
 echo "  $(docker logs "$NAME" 2>&1 | grep -m 1 -o "Applying default settings.*" | cut -c1-120)..."
 
 log "Checking segments from file names"
 # Every folder mapped into the container is watched
-docker logs "$NAME" 2>&1 | grep -q "scanning /medias /storage" \
+log_has "scanning /medias /storage" \
     || fail "the mapped folders aren't all watched: $(docker logs "$NAME" 2>&1 | grep -m 1 "scanning")"
 segments_llc="${SEGMENTS_CLIP%.mp4}-proj.llc"
 front_llc="${FRONT_CLIP%.mp4}-proj.llc"
@@ -348,7 +357,7 @@ for attempt in 1 2 3; do
     api POST /api/action/export 180 >/dev/null 2>&1 || true
     for _ in $(seq 1 30); do
         # Logged by the base image's notification service (debug level)
-        if docker logs "$NAME" 2>&1 | grep -q "new desktop notification received"; then
+        if log_has "new desktop notification received"; then
             notified=1
             break 2
         fi
