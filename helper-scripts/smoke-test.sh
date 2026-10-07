@@ -4,8 +4,9 @@
 #  check it's healthy, then through LosslessCut's HTTP API:
 #  - export a video: output named after the image's default template, source
 #    moved to the trash (default cleanup settings)
-#  - open a video named "...[2-5,8-end].mp4": segments loaded from the name,
-#    exported and merged
+#  - open a video named "[2-5,8-end]....mp4" in a second mapped folder
+#    (/medias): segments loaded from the name, exported and merged, source
+#    moved to the trash of that folder
 #  Then, in a second container with the image defaults (HTTPS and
 #  WEB_NOTIFICATION), check that the "Export finished" notification is sent.
 #
@@ -32,8 +33,11 @@ NAME="$NAME_PREFIX"
 NOTIF_NAME="${NAME_PREFIX}-notifications"
 VOLUME="${NAME_PREFIX}-storage"
 CONFIG_VOLUME="${NAME_PREFIX}-config"
+# A second share, mapped elsewhere than /storage
+MEDIA_VOLUME="${NAME_PREFIX}-medias"
 CLIP=/storage/smoke-test.mp4
 SEGMENTS_CLIP='/storage/smoke-segments[2-5,8-end].mp4'
+FRONT_CLIP='/medias/[2-5,8-end]smoke front.mp4'
 NOTIF_CLIP=/storage/notify-test.mp4
 API_PORT=8080
 
@@ -56,7 +60,7 @@ cleanup() {
     rc=$?
     remove_container "$NAME_PREFIX"
     remove_container "$NOTIF_NAME"
-    docker volume rm -f "$VOLUME" "$CONFIG_VOLUME" >/dev/null 2>&1 || true
+    docker volume rm -f "$VOLUME" "$CONFIG_VOLUME" "$MEDIA_VOLUME" >/dev/null 2>&1 || true
     if [[ $rc -ne 0 ]]; then
         log "Last lines of the container log (full logs in $OUT_DIR):"
         tail -n 50 "$OUT_DIR/$NAME.log" 2>/dev/null || true
@@ -163,11 +167,13 @@ export_and_check() {
     between "$duration" "$2" "$3" || fail "unexpected duration ${duration}s for $output (expected $2-$3s)"
 }
 
-# Usage: check_trashed PATH  (moved to the trash of /storage by the cleanup)
+# Usage: check_trashed PATH  (moved by the cleanup to the trash of the mapped
+#  folder, e.g. /storage/.Trash-1000)
 check_trashed() {
-    local name
+    local name trash
     name="$(basename "$1")"
-    wait_for_file "/storage/.Trash-1000/files/$name" 30 || fail "$1 wasn't moved to the trash"
+    trash="/$(echo "$1" | cut -d/ -f2)/.Trash-1000"
+    wait_for_file "$trash/files/$name" 30 || fail "$1 wasn't moved to $trash"
     docker exec "$NAME" test ! -e "$1" || fail "$1 still exists after the cleanup"
     echo "  trashed: $1"
 }
@@ -197,6 +203,9 @@ docker run --rm -v "$VOLUME:/storage" --entrypoint sh "$IMAGE" -c "
         -t 20 -g 50 -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest -y $CLIP \
     && cp $CLIP '$SEGMENTS_CLIP' && cp $CLIP '/storage/smoke-invalid[5-2].mp4' && cp $CLIP $NOTIF_CLIP \
     && chown -R 1000:1000 /storage"
+docker volume create "$MEDIA_VOLUME" >/dev/null
+docker run --rm -v "$VOLUME:/storage" -v "$MEDIA_VOLUME:/medias" --entrypoint sh "$IMAGE" -c "
+    cp $CLIP '$FRONT_CLIP' && chown -R 1000:1000 /medias"
 
 # LosslessCut settings as if the user had set them: no confirmation before
 #  exporting, export + merge. The image's defaults are added on top
@@ -209,7 +218,7 @@ docker run --rm -v "$CONFIG_VOLUME:/config" --entrypoint sh "$IMAGE" -c "
 
 log "Starting the container (cpus=$SMOKE_CPUS, memory=$SMOKE_MEMORY)"
 # HTTP: with HTTPS (the default), VNC is behind SSL, which vncdo can't use
-start_container "$CLIP" -v "$CONFIG_VOLUME:/config" \
+start_container "$CLIP" -v "$CONFIG_VOLUME:/config" -v "$MEDIA_VOLUME:/medias" \
     -p 127.0.0.1::5800 -p 127.0.0.1::5900 -e DISPLAY_WIDTH=1280 -e DISPLAY_HEIGHT=720 \
     -e SECURE_CONNECTION=0 -e WEB_NOTIFICATION=0
 
@@ -249,15 +258,22 @@ docker logs "$NAME" 2>&1 | grep -q "Applying default settings: .*trimmed.*cleanu
 echo "  $(docker logs "$NAME" 2>&1 | grep -m 1 -o "Applying default settings.*" | cut -c1-120)..."
 
 log "Checking segments from file names"
+# Every folder mapped into the container is watched
+docker logs "$NAME" 2>&1 | grep -q "scanning /medias /storage" \
+    || fail "the mapped folders aren't all watched: $(docker logs "$NAME" 2>&1 | grep -m 1 "scanning")"
 segments_llc="${SEGMENTS_CLIP%.mp4}-proj.llc"
-wait_for_file "$segments_llc" 30 || fail "no project file created for $SEGMENTS_CLIP"
-docker exec "$NAME" cat "$segments_llc" | sed 's/^/  /'
-docker exec "$NAME" grep -q '"start": 8, "end": 20' "$segments_llc" || fail "\"8-end\" wasn't converted using the duration"
+front_llc="${FRONT_CLIP%.mp4}-proj.llc"
+for llc in "$segments_llc" "$front_llc"; do
+    wait_for_file "$llc" 30 || fail "no project file created: $llc"
+    echo "  $llc:"
+    docker exec "$NAME" cat "$llc" | sed 's/^/    /'
+    docker exec "$NAME" grep -q '"start": 8, "end": 20' "$llc" || fail "\"8-end\" wasn't converted using the duration in $llc"
+done
 docker exec "$NAME" test ! -e '/storage/smoke-invalid[5-2]-proj.llc' || fail "project file created for an invalid name"
 # Watching: a video added while running
-docker exec -u 1000:1000 "$NAME" sh -c "mkdir -p /storage/sub && cp $CLIP '/storage/sub/late[0-3].mp4'"
-wait_for_file '/storage/sub/late[0-3]-proj.llc' 15 || fail "no project file created for a video added while running"
-echo "  created for a new video: /storage/sub/late[0-3]-proj.llc"
+docker exec -u 1000:1000 "$NAME" sh -c "mkdir -p /medias/sub && cp $CLIP '/medias/sub/[0-3]late.mp4'"
+wait_for_file '/medias/sub/[0-3]late-proj.llc' 15 || fail "no project file created for a video added while running"
+echo "  created for a new video: /medias/sub/[0-3]late-proj.llc"
 
 log "Checking the trash"
 # /config and /storage are two volumes on the same disk, like two shared
@@ -279,13 +295,13 @@ check_trashed "$CLIP"
 screenshot capture "$OUT_DIR/02-exported.png" key esc pause 1
 
 log "Opening a video with segments in its name, exporting and merging"
-api POST /api/action/openFiles 30 "[\"$SEGMENTS_CLIP\"]" >/dev/null 2>&1 || fail "could not open $SEGMENTS_CLIP"
+api POST /api/action/openFiles 30 "[\"$FRONT_CLIP\"]" >/dev/null 2>&1 || fail "could not open $FRONT_CLIP"
 sleep 10
 screenshot capture "$OUT_DIR/03-segments-loaded.png"
 # 2-5 + 8-20 (the cuts start on keyframes, every 2s)
-export_and_check /storage/SMOKE-SEGMENTS-trimmed.mp4 14.5 15.6
-check_trashed "$SEGMENTS_CLIP"
-check_trashed "$segments_llc"
+export_and_check '/medias/SMOKE FRONT-trimmed.mp4' 14.5 15.6
+check_trashed "$FRONT_CLIP"
+check_trashed "$front_llc"
 screenshot capture "$OUT_DIR/04-segments-exported.png" key esc pause 1
 
 if command -v vncdo >/dev/null; then
@@ -295,7 +311,7 @@ if command -v vncdo >/dev/null; then
     # Typing in the dialog searches the current folder. Closing it can take
     #  several Esc while searching
     screenshot capture "$OUT_DIR/05-open-dialog.png" \
-        type late pause 3 capture "$OUT_DIR/06-dialog-search.png" \
+        type smoke pause 3 capture "$OUT_DIR/06-dialog-search.png" \
         key esc pause 1 key esc pause 1 key esc pause 2
     # GTK saves the file chooser settings when it's closed (GSETTINGS_BACKEND)
     keyfile=/config/xdg/config/glib-2.0/settings/keyfile
