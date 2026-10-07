@@ -195,16 +195,20 @@ scan() {
 }
 
 watch() {
-    dirs=""
+    # Keep the existing folders only
+    n=$#
     for d in "$@"; do
-        [ -d "$d" ] && dirs="$dirs $d"
+        if [ -d "$d" ]; then
+            set -- "$@" "$d"
+        else
+            log "WARNING: $d is not a folder, not watched"
+        fi
     done
-    if [ -z "$dirs" ]; then
-        log "no directory to watch ($*)"
+    shift "$n"
+    if [ $# -eq 0 ]; then
+        log "no folder to watch"
         exec sleep infinity
     fi
-    # shellcheck disable=SC2086
-    set -- $dirs
 
     log "scanning $*"
     scan "$@"

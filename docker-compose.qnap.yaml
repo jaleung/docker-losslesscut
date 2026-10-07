@@ -36,14 +36,14 @@ services:
       GROUP_ID: "100"
       # CHANGE ME: Your time zone, e.g. Europe/London, Asia/Hong_Kong
       TZ: Etc/UTC
-      # HTTPS (self-signed certificate, accept the browser warning once).
-      #  Needed to copy and paste directly between your computer and
-      #  LosslessCut (Chrome/Edge: side panel -> Settings -> Sync with Host
-      #  Clipboard)
+      # HTTPS (self-signed certificate, accept the browser warning once), the
+      #  image's default. Needed to copy and paste directly between your
+      #  computer and LosslessCut (Chrome/Edge: side panel -> Settings -> Sync
+      #  with Host Clipboard)
       SECURE_CONNECTION: "1"
       # Browser notification (with the system's notification sound) when an
-      #  export is done. Allow notifications when the browser asks. Needs
-      #  SECURE_CONNECTION
+      #  export is done, the image's default. Allow notifications when the
+      #  browser asks. Needs SECURE_CONNECTION
       WEB_NOTIFICATION: "1"
       # Smaller screen = less work encoding the display on a small CPU
       DISPLAY_WIDTH: "1600"
@@ -58,6 +58,10 @@ services:
       # auto: use the GPU if /dev/dri works. Set to 0 if you get a black
       #  video or glitches
       LOSSLESSCUT_GPU: auto
+      # Segments from file names, e.g. "New Video[10-20,30-end].mp4": the
+      #  folders to watch for such videos, comma separated (default: the whole
+      #  share). Set LOSSLESSCUT_FILENAME_SEGMENTS to "0" to disable
+      # LOSSLESSCUT_FILENAME_SEGMENTS_PATHS: /storage
     # Leave one core and most of the memory for QTS and other services
     cpus: "3.0"
     # Raise to 3g if you work with 4K files and see LosslessCut restarting
