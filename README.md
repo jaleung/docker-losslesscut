@@ -100,7 +100,7 @@ If the application fails to start with an error about `/dev/dri`, your NAS has n
 
 **Finding files**: in the *Open file* dialog, just start typing (or click the magnifier at the top right) to search the current folder, see [Finding Files in Large Folders](#finding-files-in-large-folders).
 
-**Segments from file names**: name a video e.g. `New Video[6604.630613-9797.852513].mp4`, and the segment is ready to export when you open it in LosslessCut, see [Segments from File Names](#segments-from-file-names).
+**Segments from file names**: name a video e.g. `[6604.630613-9797.852513]New Video.mp4` or `New Video[6604.630613-9797.852513].mp4`, and the segment is ready to export when you open it in LosslessCut, see [Segments from File Names](#segments-from-file-names).
 
 **Exporting**: the exported file is named e.g. `NEW VIDEO-trimmed.mp4`, and the original video and its project file are then moved to the trash automatically, see [Export Defaults](#export-defaults). The trash is the hidden `.Trash-<USER_ID>` folder at the top of the share, e.g. `/share/Multimedia/.Trash-500`: enable *Show hidden files* in File Station's settings to see it, and empty it from there.
 
@@ -150,7 +150,7 @@ Variables specific to this image:
 |`LOSSLESSCUT_DISABLE_NETWORKING`| When set to `1`, LosslessCut works offline: no update checks (updates come with new images). Set to `0` to download media from URLs. | `1` |
 |`LOSSLESSCUT_DEFAULT_SETTINGS`| When set to `1`, the [export defaults](#export-defaults) of this image (output file name, cleanup after export) are applied to the LosslessCut settings you haven't changed yourself. Set to `0` to keep LosslessCut's own defaults. | `1` |
 |`LOSSLESSCUT_FILENAME_SEGMENTS`| When set to `1`, videos with segments in their name get a project file, see [Segments from File Names](#segments-from-file-names). Set to `0` to disable. | `1` |
-|`LOSSLESSCUT_FILENAME_SEGMENTS_PATHS`| Comma-separated list of the folders where videos with segments in their name are looked for (with their subfolders). | `/storage` |
+|`LOSSLESSCUT_FILENAME_SEGMENTS_PATHS`| Folders where videos with segments in their name are looked for (with their subfolders): `auto` for every folder mapped into the container except `/config`, or a comma-separated list, e.g. `/storage/To cut`. | `auto` |
 |`LOSSLESSCUT_ARGS`| Additional [command line arguments](https://github.com/mifi/lossless-cut/blob/master/docs/cli.md) for LosslessCut, e.g. `--http-api` or files to open. | `""` |
 
 Common variables, provided by the [base image](https://github.com/jlesage/docker-baseimage-gui#environment-variables) (which has more):
@@ -216,19 +216,20 @@ The *Open file* dialog can search the folder it shows, which helps with folders 
 
 ### Segments from File Names
 
-When the name of a video ends with time ranges in square brackets, right before the extension, these ranges are ready as segments when the video is opened in LosslessCut:
+When the name of a video starts with time ranges in square brackets, or has them right before the extension, these ranges are ready as segments when the video is opened in LosslessCut:
 
 ```
-New Video[6604.630613-9797.852513].mp4      one segment, from 6604.630613s to 9797.852513s
-Interview[0-95.5, 120-300, 2710-end].mkv    three segments
+[6604.630613-9797.852513]New Video.mp4      one segment, from 6604.630613s to 9797.852513s
+New Video[6604.630613-9797.852513].mp4      the same
+[0-95.5, 120-300, 2710-end]Interview.mkv    three segments
 ```
 
 * Each `start-end` range is a part to **keep**, in seconds (with decimals or not). Several ranges are separated by commas, spaces are allowed.
 * `0` is the beginning of the video, and `end` (or `END`) its end.
-* Only the brackets right before the extension count: `My [draft] clip[5-60].mp4` has one segment, from 5 to 60s.
-* Names that don't follow this are left alone, the video opens as usual, e.g. `Holiday[draft].mp4`, `[10-20] clip.mp4`, `clip[1:00-2:00].mp4`, or a range ending before it starts like `clip[20-10].mp4`.
+* Only the brackets at the start of the name or right before the extension count: `[5-60]My [draft] clip.mp4` and `My [draft] clip[5-60].mp4` both have one segment, from 5 to 60s. If both have valid ranges, the ones at the start are used.
+* Names that don't follow this are left alone, the video opens as usual, e.g. `Holiday[draft].mp4`, `Clip [10-20] copy.mp4`, `clip[1:00-2:00].mp4`, or a range ending before it starts like `clip[20-10].mp4`.
 
-How it works: the container watches `/storage` (see `LOSSLESSCUT_FILENAME_SEGMENTS_PATHS` in [Environment Variables](#environment-variables)) and writes a LosslessCut project file next to each such video, e.g. `New Video[6604.630613-9797.852513]-proj.llc`, which LosslessCut loads when it opens the video.
+How it works: the container watches every folder mapped into it, e.g. `/storage` or `/medias`, except `/config` (see `LOSSLESSCUT_FILENAME_SEGMENTS_PATHS` in [Environment Variables](#environment-variables)). It writes a LosslessCut project file next to each such video, e.g. `[6604.630613-9797.852513]New Video-proj.llc`, which LosslessCut loads when it opens the video. The container log lists the watched folders (`scanning ...`).
 
 * Videos copied, moved or renamed into the folder get their project file a moment after the copy is complete. Videos already there are handled when the container starts.
 * An existing project file is never replaced. Once you've changed the segments in LosslessCut (which saves the project), your changes are kept. To go back to the segments of the file name, delete the `-proj.llc` file before opening the video again.
@@ -243,12 +244,12 @@ The image changes some of LosslessCut's default settings:
 
 | Setting (in LosslessCut) | Default of this image |
 |--------------------------|-----------------------|
-| Output file name template, for *Export* and for *Export + merge* | `${FILENAME.replace(/\[[^\]]*\]\s*/g, '').toUpperCase()}-trimmed${EXT}`: the name without its `[...]` parts, in capitals, followed by `-trimmed`, e.g. `New Video[6604.630613-9797.852513].mp4` → `NEW VIDEO-trimmed.mp4` |
+| Output file name template, for *Export* and for *Export + merge* | `${FILENAME.replace(/\[[^\]]*\]\s*/g, '').toUpperCase()}-trimmed${EXT}`: the name without its `[...]` parts, in capitals, followed by `-trimmed`, e.g. `New Video[6604.630613-9797.852513].mp4` or `[6604.630613-9797.852513] New Video.mp4` → `NEW VIDEO-trimmed.mp4` |
 | Cleanup after export | Done automatically, without asking: move the source video, its project file and LosslessCut's temporary files to the trash, delete them permanently if they can't be moved to the trash, and close the file |
 
 * These are applied when LosslessCut starts, only to the settings you haven't changed: a template or cleanup choice you set yourself in LosslessCut is kept, also when updating the image. Set `LOSSLESSCUT_DEFAULT_SETTINGS=0` to keep LosslessCut's own defaults instead, or pass your own settings with `--settings-json` in `LOSSLESSCUT_ARGS` (the defaults are then skipped).
 * When several segments are exported as separate files (without merging), the template gives them all the same name, so LosslessCut uses its own template for them, which adds the segment number.
-* The trash: files on `/storage` are moved to the hidden `.Trash-<USER_ID>` folder at the top of the folder mapped to `/storage`, e.g. `/share/Multimedia/.Trash-500` on a QNAP NAS. It isn't emptied automatically. To restore a file, move it back from the `files` folder in there.
+* The trash: files are moved to the hidden `.Trash-<USER_ID>` folder at the top of the mapped folder they're in, e.g. `/share/Multimedia/.Trash-500` on a QNAP NAS for a share mapped to `/storage` or `/medias`. It isn't emptied automatically. To restore a file, move it back from the `files` folder in there.
 * If the output file already exists, LosslessCut overwrites it without asking (its *Overwrite existing files* setting, on by default). Videos whose names only differ in their `[...]` part, e.g. `Clip[1-2].mp4` and `Clip[5-9].mp4`, both export to `CLIP-trimmed.mp4`: move or rename the first export before exporting the second one. Turning that setting off doesn't help here: LosslessCut then skips the existing file, still treats the export as done, and the cleanup runs.
 
 ### Hardware Acceleration

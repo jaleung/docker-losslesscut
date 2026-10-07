@@ -2,11 +2,13 @@
 #
 # Segments from file names: for a video named e.g.
 #   New Video[6604.630613-9797.852513,10000-end].mp4
+#   [6604.630613-9797.852513,10000-end]New Video.mp4
 # create the LosslessCut project file "New Video[...]-proj.llc" next to it,
 # so that LosslessCut loads these segments (parts to keep) when the video is
 # opened.
 #
-# - The [...] block must be right before the extension
+# - The [...] block must be at the start of the name, or right before the
+#   extension. If both are valid, the one at the start is used
 # - Ranges are "start-end" in seconds, separated by commas, spaces allowed.
 #   start can be 0 (beginning of the video), end can be "end" (end of the video,
 #   its duration is read with ffprobe)
@@ -23,7 +25,11 @@
 #   filename-segments remove-orphan FILE  remove the generated project file of
 #                                    a deleted video
 #   filename-segments scan DIR...    generate for all videos under DIR
-#   filename-segments watch DIR...   scan, then watch for new/renamed videos
+#   filename-segments watch DIR...   scan, then watch for new/renamed videos.
+#                                    "auto": the folders mapped into the
+#                                    container (see mapped-folders)
+#   filename-segments mapped-folders print the folders mapped into the
+#                                    container, except /config and system ones
 #
 
 set -u
@@ -32,6 +38,7 @@ MARKER="docker-losslesscut filename-segments"
 EXTENSIONS="mp4 m4v mov mkv webm avi ts m2ts mts mpg mpeg vob flv wmv 3gp mxf ogv mp3 m4a aac flac wav ogg opus mka"
 POLL_INTERVAL="${LOSSLESSCUT_FILENAME_SEGMENTS_POLL_INTERVAL:-60}"
 FFPROBE="${LOSSLESSCUT_FFPROBE:-/LosslessCut/resources/ffprobe}"
+MOUNTINFO="${LOSSLESSCUT_MOUNTINFO:-/proc/self/mountinfo}"
 
 log() {
     echo "$*"
@@ -54,22 +61,10 @@ is_video() {
     return 1
 }
 
-# Print the JSON segments for a file name (with or without extension).
-# Exit 1 when the name has no valid segments.
-# Usage: parse NAME [DURATION]
-parse() {
-    name="$(basename "$1")"
-    # Strip the extension
-    case "$name" in
-        *\].*) name="${name%.*}" ;;
-    esac
-    case "$name" in
-        *\[*\]) ;;
-        *) return 1 ;;
-    esac
-    spec="${name##*\[}"
-    spec="${spec%\]}"
-    printf '%s\n' "$spec" | awk -v duration="${2:-}" '
+# Print the JSON segments of a [...] block content, exit 1 if it isn't valid
+# Usage: segments SPEC [DURATION]
+segments() {
+    printf '%s\n' "$1" | awk -v duration="${2:-}" '
         function num(s,    i, f) {
             # Normalize for JSON: no leading zeros
             i = s; f = ""
@@ -110,6 +105,36 @@ parse() {
         }
         END { exit ok ? 0 : 1 }
     '
+}
+
+# Print the JSON segments for a file name (with or without extension).
+# Exit 1 when the name has no valid segments.
+# Usage: parse NAME [DURATION]
+parse() {
+    name="$(basename "$1")"
+    # Strip the extension, unless the last "." is in the [...] block
+    case "${name##*.}" in
+        *\[*|*\]*) ;;
+        *) name="${name%.*}" ;;
+    esac
+    # Block at the start of the name
+    case "$name" in
+        \[*\]*)
+            spec="${name#\[}"
+            if segments "${spec%%\]*}" "${2:-}"; then
+                return 0
+            fi
+            ;;
+    esac
+    # Block right before the extension
+    case "$name" in
+        *\[*\])
+            spec="${name##*\[}"
+            segments "${spec%\]}" "${2:-}"
+            return
+            ;;
+    esac
+    return 1
 }
 
 # Duration of a media file in seconds, empty if unknown (e.g. still copying)
@@ -180,10 +205,10 @@ scan() {
     for dir in "$@"; do
         [ -d "$dir" ] || continue
         find "$dir" \( -name '.*' -o -name '@*' \) -prune \
-            -o -type f \( -name '*\].*' -o -name '*\]-proj.llc' \) -print 2>/dev/null \
+            -o -type f -name '*\[*\]*' -print 2>/dev/null \
             | while IFS= read -r f; do
                 case "$f" in
-                    *\]-proj.llc)
+                    *-proj.llc)
                         if is_orphan_project "$f"; then
                             rm -f "$f" && log "removed $f (video gone)"
                         fi
@@ -194,7 +219,38 @@ scan() {
     done
 }
 
+# Folders mapped into the container (bind mounts and volumes), except /config
+#  and system ones, without the folders inside another one
+mapped_folders() {
+    awk '
+        {
+            mp = $5
+            fstype = ""
+            for (i = 7; i < NF; i++) if ($i == "-") { fstype = $(i + 1); break }
+            gsub(/\\040/, " ", mp); gsub(/\\011/, "\t", mp); gsub(/\\012/, "\n", mp)
+            if (fstype ~ /^(overlay|proc|sysfs|tmpfs|devtmpfs|devpts|mqueue|cgroup2?)$/) next
+            if (mp == "/" || mp ~ /^\/(config|proc|sys|dev|run|etc)(\/|$)/) next
+            print mp
+        }' "$MOUNTINFO" 2>/dev/null \
+        | LC_ALL=C sort -u \
+        | while IFS= read -r d; do
+            [ -d "$d" ] && printf '%s\n' "$d"
+        done \
+        | awk '{ for (i = 1; i <= n; i++) if (index($0, kept[i] "/") == 1) next; kept[++n] = $0; print }'
+}
+
 watch() {
+    if [ $# -eq 1 ] && [ "$1" = auto ]; then
+        folders="$(mapped_folders)"
+        set -f
+        IFS='
+'
+        # shellcheck disable=SC2086
+        set -- $folders
+        unset IFS
+        set +f
+        [ $# -gt 0 ] || set -- /storage
+    fi
     # Keep the existing folders only
     n=$#
     for d in "$@"; do
@@ -246,5 +302,6 @@ case "$cmd" in
     remove-orphan) for f in "$@"; do remove_orphan "$f"; done ;;
     scan) scan "$@" ;;
     watch) watch "$@" ;;
-    *) echo "usage: $(basename "$0") parse NAME | generate FILE... | remove-orphan FILE... | scan DIR... | watch DIR..." >&2; exit 2 ;;
+    mapped-folders) mapped_folders ;;
+    *) echo "usage: $(basename "$0") parse NAME | generate FILE... | remove-orphan FILE... | scan DIR... | watch auto|DIR... | mapped-folders" >&2; exit 2 ;;
 esac

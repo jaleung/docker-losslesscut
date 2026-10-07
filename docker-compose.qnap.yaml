@@ -58,10 +58,11 @@ services:
       # auto: use the GPU if /dev/dri works. Set to 0 if you get a black
       #  video or glitches
       LOSSLESSCUT_GPU: auto
-      # Segments from file names, e.g. "New Video[10-20,30-end].mp4": the
-      #  folders to watch for such videos, comma separated (default: the whole
-      #  share). Set LOSSLESSCUT_FILENAME_SEGMENTS to "0" to disable
-      # LOSSLESSCUT_FILENAME_SEGMENTS_PATHS: /storage
+      # Segments from file names, e.g. "[10-20,30-end]New Video.mp4": the
+      #  folders to watch for such videos, comma separated (default "auto":
+      #  every mapped folder). Set LOSSLESSCUT_FILENAME_SEGMENTS to "0" to
+      #  disable
+      # LOSSLESSCUT_FILENAME_SEGMENTS_PATHS: /storage/To cut
     # Leave one core and most of the memory for QTS and other services
     cpus: "3.0"
     # Raise to 3g if you work with 4K files and see LosslessCut restarting

@@ -40,6 +40,20 @@ expect 'clip[30-end].mp4' none 20
 expect 'clip[0006604.630-0009797.85].mp4' '[{"start":6604.630,"end":9797.85,"name":""}]'
 expect 'clip[0.5-1].mp4' '[{"start":0.5,"end":1,"name":""}]'
 expect 'my [draft] clip[5-6].mp4' '[{"start":5,"end":6,"name":""}]'
+# Block at the start of the name
+expect '[0-968.968000,2080.078000-4197.393200,4682.678000-end]new video.mp4' \
+    '[{"start":0,"end":968.968000,"name":""},{"start":2080.078000,"end":4197.393200,"name":""},{"start":4682.678000,"name":""}]'
+expect '[0-968.968000,2080.078000-4197.393200,4682.678000-end]new video.mp4' \
+    '[{"start":0,"end":968.968000,"name":""},{"start":2080.078000,"end":4197.393200,"name":""},{"start":4682.678000,"end":5000.5,"name":""}]' 5000.5
+expect '[5-6]my [draft] clip.mp4' '[{"start":5,"end":6,"name":""}]'
+expect '[5-6] clip.mp4' '[{"start":5,"end":6,"name":""}]'
+expect '[draft]clip[5-6].mp4' '[{"start":5,"end":6,"name":""}]'
+expect '[1-2]clip[3-4].mp4' '[{"start":1,"end":2,"name":""}]'
+expect '[1-2].mp4' '[{"start":1,"end":2,"name":""}]'
+expect '[1.5-2]clip' '[{"start":1.5,"end":2,"name":""}]'
+expect 'clip[1.5-2]' '[{"start":1.5,"end":2,"name":""}]'
+expect '[2-1]clip.mp4' none
+expect 'clip [1-2] copy.mp4' none
 expect 'Holiday[draft].mp4' none
 expect 'clip[20-10].mp4' none
 expect 'clip[10-10].mp4' none
@@ -68,6 +82,7 @@ export LOSSLESSCUT_FFPROBE="$tmp/bin/ffprobe"
 mkdir -p "$tmp/sub" "$tmp/.Trash-1000/files" "$tmp/@Recycle" "$tmp/.@__thumb"
 echo data > "$tmp/sub/b[0-end].MKV"
 echo data > "$tmp/sub/b3[1 - END].mp4"
+echo data > "$tmp/sub/[2-end]front.mp4"
 touch "$tmp/incomplete[5-end].mp4"
 touch "$tmp/a[1-2].mp4" "$tmp/c[bad].mp4" "$tmp/d[1-2].txt" \
     "$tmp/.Trash-1000/files/e[1-2].mp4" "$tmp/@Recycle/f[1-2].mp4" "$tmp/.@__thumb/g[1-2].mp4" "$tmp/h[3-4].mp4"
@@ -79,6 +94,8 @@ check_exists "$tmp/a[1-2]-proj.llc"
 check_exists "$tmp/sub/b[0-end]-proj.llc"
 if grep -q '"end": 42.5' "$tmp/sub/b[0-end]-proj.llc"; then pass "end -> duration"; else fail "end not set to the duration: $(cat "$tmp/sub/b[0-end]-proj.llc")"; fi
 check_exists "$tmp/sub/b3[1 - END]-proj.llc"
+check_exists "$tmp/sub/[2-end]front-proj.llc"
+if grep -q '"start": 2, "end": 42.5' "$tmp/sub/[2-end]front-proj.llc"; then pass "block at the start"; else fail "block at the start: $(cat "$tmp/sub/[2-end]front-proj.llc")"; fi
 check_absent "$tmp/incomplete[5-end]-proj.llc"
 check_absent "$tmp/c[bad]-proj.llc"
 check_absent "$tmp/d[1-2]-proj.llc"
@@ -103,6 +120,29 @@ mv "$tmp/sub/b[0-end].MKV" "$tmp/sub/b2[0-end].MKV"
 sh "$TOOL" scan "$tmp" > /dev/null
 check_absent "$tmp/sub/b[0-end]-proj.llc"
 check_exists "$tmp/sub/b2[0-end]-proj.llc"
+mv "$tmp/sub/[2-end]front.mp4" "$tmp/sub/[2-end]front2.mp4"
+sh "$TOOL" scan "$tmp" > /dev/null
+check_absent "$tmp/sub/[2-end]front-proj.llc"
+check_exists "$tmp/sub/[2-end]front2-proj.llc"
+
+echo "Folders mapped into the container"
+m="$tmp/mapped"
+mkdir -p "$m/medias/Download" "$m/my videos" "$m/storage"
+touch "$m/single.txt"
+printf '%s\n' \
+    "1 0 0:50 / / rw,relatime - overlay overlay rw" \
+    "2 1 0:5 / /proc rw - proc proc rw" \
+    "3 1 0:6 / /dev rw - tmpfs tmpfs rw" \
+    "4 3 0:7 / /dev/dri rw - devtmpfs udev rw" \
+    "5 1 253:0 /Container/losslesscut /config rw,relatime - ext4 /dev/mapper/cachedev1 rw" \
+    "6 1 253:0 /Multimedia $m/medias rw,relatime master:1 - ext4 /dev/mapper/cachedev1 rw" \
+    "7 6 253:0 /Download $m/medias/Download rw,relatime - ext4 /dev/mapper/cachedev1 rw" \
+    "8 1 253:0 /Videos $m/my\\040videos rw,relatime - ext4 /dev/mapper/cachedev1 rw" \
+    "9 1 253:0 /hosts /etc/hosts rw,relatime - ext4 /dev/mapper/cachedev1 rw" \
+    "10 1 253:0 /single.txt $m/single.txt rw,relatime - ext4 /dev/mapper/cachedev1 rw" \
+    "11 1 0:8 / $m/storage rw - tmpfs tmpfs rw" > "$m/mountinfo"
+got="$(LOSSLESSCUT_MOUNTINFO="$m/mountinfo" sh "$TOOL" mapped-folders | tr '\n' '|')"
+if [[ "$got" == "$m/medias|$m/my videos|" ]]; then pass "mapped folders"; else fail "mapped folders: $got"; fi
 
 echo "Settings defaults"
 if command -v node > /dev/null; then
@@ -137,6 +177,7 @@ if command -v node > /dev/null; then
     }
     template_output 'New Video[6604.630613-9797.852513]' 'NEW VIDEO-trimmed.mp4'
     template_output 'my [draft] clip[5-6]' 'MY CLIP-trimmed.mp4'
+    template_output '[0-10] New Video' 'NEW VIDEO-trimmed.mp4'
 else
     echo "  skipped (node not found)"
 fi
