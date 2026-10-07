@@ -1,0 +1,116 @@
+#!/bin/sh
+#
+# "gio trash" for the folders mapped into the container.
+#
+# LosslessCut (Electron) moves files to the trash with "gio trash FILE". For a
+#  file on the same device as the home folder (/config), gio uses the trash of
+#  the home folder, and fails to move the file there when it's another mount
+#  of that device, e.g. two shared folders of the same NAS volume mapped to
+#  /config and /storage: "Unable to trash file ... across filesystem
+#  boundaries". LosslessCut would then delete the file permanently.
+#
+# This moves files that aren't on the mount of the home trash to the trash at
+#  the top of their own mount, <mount>/.Trash-<uid> (as gio does for other
+#  devices, see the FreeDesktop trash specification), e.g.
+#  /storage/.Trash-1000. Everything else is passed to the real gio.
+#
+
+GIO="${GIO_REAL:-/usr/bin/gio}"
+MOUNTINFO="${GIO_MOUNTINFO:-/proc/self/mountinfo}"
+
+# Mount point containing PATH (absolute, symlinks resolved), empty if unknown
+mount_point() {
+    awk -v path="$1" '
+        {
+            mp = $5
+            gsub(/\\040/, " ", mp); gsub(/\\011/, "\t", mp); gsub(/\\012/, "\n", mp)
+            if ((mp == "/" || path == mp || index(path, mp "/") == 1) && length(mp) > length(best))
+                best = mp
+        }
+        END { print best }
+    ' "$MOUNTINFO" 2>/dev/null
+}
+
+# Percent-encoding of the paths in .trashinfo files
+urlencode() {
+    printf '%s' "$1" | od -An -v -tx1 | awk '
+        BEGIN { hex = "0123456789abcdef" }
+        {
+            for (i = 1; i <= NF; i++) {
+                d = (index(hex, substr($i, 1, 1)) - 1) * 16 + index(hex, substr($i, 2, 1)) - 1
+                if ((d >= 48 && d <= 57) || (d >= 65 && d <= 90) || (d >= 97 && d <= 122) \
+                    || d == 45 || d == 46 || d == 95 || d == 126 || d == 47)
+                    printf "%c", d
+                else
+                    printf "%%%s", toupper($i)
+            }
+        }'
+}
+
+error() {
+    echo "gio: $1: $2" >&2
+    return 1
+}
+
+trash_file() {
+    file="$1"
+    [ -e "$file" ] || [ -L "$file" ] || { error "$file" "No such file or directory"; return 1; }
+    dir="$(cd -P -- "$(dirname -- "$file")" && pwd)" || return 1
+    name="$(basename -- "$file")"
+    path="${dir%/}/$name"
+    mp="$(mount_point "$path")"
+    case "$mp" in
+        ""|/|"$HOME_MOUNT"|"$path") "$GIO" trash -- "$file"; return ;;
+    esac
+
+    uid="$(id -u)"
+    trash="$mp/.Trash-$uid"
+    [ -L "$trash" ] && { error "$file" "$trash is a symbolic link"; return 1; }
+    [ -d "$trash" ] || mkdir -m 700 "$trash" 2>/dev/null
+    if [ ! -d "$trash" ] || [ "$(stat -c %u "$trash")" != "$uid" ]; then
+        error "$file" "Unable to find or create trash directory $trash"
+        return 1
+    fi
+    mkdir -p "$trash/files" "$trash/info" || return 1
+
+    # Unique name in the trash ("name.2.ext", like gio), reserved by creating
+    #  its info file
+    stem="${name%%.*}"
+    rest="${name#"$stem"}"
+    tname="$name"
+    i=1
+    until [ ! -e "$trash/files/$tname" ] && [ ! -L "$trash/files/$tname" ] \
+        && (set -C; : > "$trash/info/$tname.trashinfo") 2>/dev/null; do
+        i=$((i + 1))
+        [ "$i" -gt 1000 ] && { error "$file" "Unable to create trash info file in $trash/info"; return 1; }
+        tname="$stem.$i$rest"
+    done
+    info="$trash/info/$tname.trashinfo"
+    printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' \
+        "$(urlencode "${path#"$mp"/}")" "$(date +%Y-%m-%dT%H:%M:%S)" > "$info"
+    if ! mv -- "$file" "$trash/files/$tname"; then
+        rm -f "$info"
+        error "$file" "Unable to move to $trash/files"
+        return 1
+    fi
+}
+
+if [ "${1:-}" = trash ] && [ $# -ge 2 ]; then
+    shift
+    # Options or URIs: real gio
+    for f in "$@"; do
+        case "$f" in
+            -*|*://*) exec "$GIO" trash "$@" ;;
+        esac
+    done
+    home_data="${XDG_DATA_HOME:-${HOME:-/root}/.local/share}"
+    home_data="$(cd -P -- "$home_data" 2>/dev/null && pwd || echo "$home_data")"
+    HOME_MOUNT="$(mount_point "$home_data")"
+    status=0
+    for f in "$@"; do
+        trash_file "$f" || status=1
+    done
+    exit $status
+fi
+
+exec "$GIO" "$@"

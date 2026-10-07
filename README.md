@@ -37,6 +37,8 @@ The swiss army knife of lossless video/audio editing
       * [Data Volumes](#data-volumes)
       * [Ports](#ports)
       * [Finding Files in Large Folders](#finding-files-in-large-folders)
+      * [Segments from File Names](#segments-from-file-names)
+      * [Export Defaults](#export-defaults)
       * [Hardware Acceleration](#hardware-acceleration)
       * [Audio playback](#audio-playback)
       * [Low Resource Hosts](#low-resource-hosts)
@@ -66,7 +68,7 @@ Where:
   - `/path/to/data/losslesscut`: Where the application stores any persistent data.
   - `$HOME`: This location contains files from your host that need to be accessible to the application.
 
-Browse to `http://your-host-ip:5800` to access the LosslessCut GUI.
+Browse to `https://your-host-ip:5800` to access the LosslessCut GUI. It uses a self-signed certificate, so the browser shows a warning the first time: choose to continue (in Chrome/Edge: *Advanced → Proceed*). For plain HTTP instead, add `-e SECURE_CONNECTION=0 -e WEB_NOTIFICATION=0`.
 Files from the host appear under the `/storage` folder in the container, which is also where the file dialogs open.
 
 **Notes:**
@@ -92,15 +94,19 @@ It's tuned for a small NAS such as the TS-453BT3 (Intel Celeron J3455, 4 cores, 
    * the settings folder from step 2 and the share with your videos (`/share/Multimedia` by default),
    * `USER_ID` and `GROUP_ID` from step 3,
    * `TZ`, your [time zone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones).
-5. Browse to `https://<NAS IP>:5800`. The compose file enables HTTPS with a self-signed certificate, so the browser shows a warning the first time: choose to continue (in Chrome/Edge: *Advanced → Proceed*).
+5. Browse to `https://<NAS IP>:5800`. The image uses HTTPS with a self-signed certificate, so the browser shows a warning the first time: choose to continue (in Chrome/Edge: *Advanced → Proceed*).
 
 If the application fails to start with an error about `/dev/dri`, your NAS has no usable GPU: remove the `devices:` section.
 
 **Finding files**: in the *Open file* dialog, just start typing (or click the magnifier at the top right) to search the current folder, see [Finding Files in Large Folders](#finding-files-in-large-folders).
 
-**Notification when an export is done**: like the desktop app, LosslessCut can tell you when an export (or a merge) is finished or has failed, with the usual notification sound of your computer. The compose file enables it (`WEB_NOTIFICATION=1`, which needs `SECURE_CONNECTION=1`). The browser asks for permission on your first click in the page: choose *Allow*. The page has to stay open, it can be in a background tab. On Windows, the sound follows *Settings → System → Notifications → Google Chrome/Microsoft Edge → Play a sound*. In LosslessCut, *Settings → Prompts and dialogs → Show notifications* must stay enabled (the default).
+**Segments from file names**: name a video e.g. `New Video[6604.630613-9797.852513].mp4`, and the segment is ready to export when you open it in LosslessCut, see [Segments from File Names](#segments-from-file-names).
 
-**Copy and paste**: to copy and paste directly between your computer and LosslessCut (e.g. timecodes), use Chrome or Edge, open the side panel (the tab on the left edge), and enable *Settings → Sync with Host Clipboard*; allow clipboard access when the browser asks. This needs HTTPS (`SECURE_CONNECTION=1`, set in the compose file): over plain `http://` the switch isn't shown. Firefox and Safari don't support it, use the *Clipboard* box of the side panel instead. To get rid of the certificate warning, copy a certificate for the NAS (e.g. from myQNAPcloud) to `certs/web-privkey.pem` and `certs/web-fullchain.pem` in the settings folder, see [Certificates](#certificates).
+**Exporting**: the exported file is named e.g. `NEW VIDEO-trimmed.mp4`, and the original video and its project file are then moved to the trash automatically, see [Export Defaults](#export-defaults). The trash is the hidden `.Trash-<USER_ID>` folder at the top of the share, e.g. `/share/Multimedia/.Trash-500`: enable *Show hidden files* in File Station's settings to see it, and empty it from there.
+
+**Notification when an export is done**: like the desktop app, LosslessCut can tell you when an export (or a merge) is finished or has failed, with the usual notification sound of your computer. It's enabled by default (`WEB_NOTIFICATION=1`, which needs `SECURE_CONNECTION=1`, also the default). The browser asks for permission on your first click in the page: choose *Allow*. The page has to stay open, it can be in a background tab. On Windows, the sound follows *Settings → System → Notifications → Google Chrome/Microsoft Edge → Play a sound*. In LosslessCut, *Settings → Prompts and dialogs → Show notifications* must stay enabled (the default).
+
+**Copy and paste**: to copy and paste directly between your computer and LosslessCut (e.g. timecodes), use Chrome or Edge, open the side panel (the tab on the left edge), and enable *Settings → Sync with Host Clipboard*; allow clipboard access when the browser asks. This needs HTTPS (`SECURE_CONNECTION=1`, the default): over plain `http://` the switch isn't shown. Firefox and Safari don't support it, use the *Clipboard* box of the side panel instead. To get rid of the certificate warning, copy a certificate for the NAS (e.g. from myQNAPcloud) to `certs/web-privkey.pem` and `certs/web-fullchain.pem` in the settings folder, see [Certificates](#certificates).
 
 **Checking hardware acceleration**: the container's log in Container Station shows `[startapp] GPU enabled (render node: /dev/dri/renderD128)` when the GPU is used. Over SSH, `docker exec losslesscut vainfo` should list the supported codecs (`VAProfileH264...`, `VAProfileHEVC...`). To also let LosslessCut's FFmpeg use it, set *Settings → FFmpeg hardware acceleration* to `vaapi` in LosslessCut. See [Hardware Acceleration](#hardware-acceleration) if something doesn't work.
 
@@ -142,6 +148,9 @@ Variables specific to this image:
 |----------------|----------------------------------------------|---------|
 |`LOSSLESSCUT_GPU`| `auto`: use the GPU when `/dev/dri` is passed to the container and usable, `1`: always try to use the GPU, `0`: never use the GPU.  See [Hardware Acceleration](#hardware-acceleration). | `auto` |
 |`LOSSLESSCUT_DISABLE_NETWORKING`| When set to `1`, LosslessCut works offline: no update checks (updates come with new images). Set to `0` to download media from URLs. | `1` |
+|`LOSSLESSCUT_DEFAULT_SETTINGS`| When set to `1`, the [export defaults](#export-defaults) of this image (output file name, cleanup after export) are applied to the LosslessCut settings you haven't changed yourself. Set to `0` to keep LosslessCut's own defaults. | `1` |
+|`LOSSLESSCUT_FILENAME_SEGMENTS`| When set to `1`, videos with segments in their name get a project file, see [Segments from File Names](#segments-from-file-names). Set to `0` to disable. | `1` |
+|`LOSSLESSCUT_FILENAME_SEGMENTS_PATHS`| Comma-separated list of the folders where videos with segments in their name are looked for (with their subfolders). | `/storage` |
 |`LOSSLESSCUT_ARGS`| Additional [command line arguments](https://github.com/mifi/lossless-cut/blob/master/docs/cli.md) for LosslessCut, e.g. `--http-api` or files to open. | `""` |
 
 Common variables, provided by the [base image](https://github.com/jlesage/docker-baseimage-gui#environment-variables) (which has more):
@@ -162,10 +171,10 @@ Common variables, provided by the [base image](https://github.com/jlesage/docker
 |`DISPLAY_HEIGHT`| Height (in pixels) of the application's window. | `1080` |
 |`DARK_MODE`| When set to `1`, dark mode is enabled for the application. | `0` |
 |`WEB_AUDIO`| When set to `1`, audio support is enabled, meaning that any audio produced by the application is played through the browser. Note that audio is not supported for VNC clients. | `0` |
-|`WEB_NOTIFICATION`| When set to `1`, desktop notifications of the application (e.g. "Export finished") are shown by the browser, with the system's notification sound. Requires `SECURE_CONNECTION`, the container doesn't start otherwise. | `0` |
+|`WEB_NOTIFICATION`| When set to `1`, desktop notifications of the application (e.g. "Export finished") are shown by the browser, with the system's notification sound. Requires `SECURE_CONNECTION`, the container doesn't start otherwise: set both to `0` for plain HTTP. | `1` (base image: `0`) |
 |`WEB_AUTHENTICATION`| When set to `1`, the GUI is protected by a login page when accessed with a browser. Requires `SECURE_CONNECTION`, see the [base image documentation](https://github.com/jlesage/docker-baseimage-gui#web-authentication). | `0` |
 |`WEB_FILE_MANAGER`| When set to `1`, a simple file manager (upload, download, rename, delete) is available in the web interface. | `0` |
-|`SECURE_CONNECTION`| When set to `1`, an encrypted connection is used to access the application's GUI (either via a web browser or VNC client).  See the [Security](#security) section for more details. | `0` |
+|`SECURE_CONNECTION`| When set to `1`, an encrypted connection is used to access the application's GUI (either via a web browser or VNC client).  See the [Security](#security) section for more details. | `1` (base image: `0`) |
 |`WEB_LISTENING_PORT`| Port used by the web server to serve the UI of the application.  This port is used internally by the container and it is usually not required to be changed.  **NOTE**: a value of `-1` disables listening, meaning that the application's UI won't be accessible over HTTP/HTTPs. | `5800` |
 |`VNC_LISTENING_PORT`| Port used by the VNC server to serve the UI of the application.  This port is used internally by the container and it is usually not required to be changed.  **NOTE**: a value of `-1` disables listening, meaning that the application's UI won't be accessible over VNC. | `5900` |
 |`VNC_PASSWORD`| Password needed to connect to the application's GUI.  See the [VNC Password](#vnc-password) section for more details. | `""` |
@@ -204,6 +213,43 @@ The *Open file* dialog can search the folder it shows, which helps with folders 
 * **Click a column header** to sort, e.g. *Modified* twice for the newest files first. The sort order and the size of the dialog are remembered.
 
 *Open folder* (in the *File* menu) loads all the files of a folder in LosslessCut's batch list instead, which can be sorted but not searched.
+
+### Segments from File Names
+
+When the name of a video ends with time ranges in square brackets, right before the extension, these ranges are ready as segments when the video is opened in LosslessCut:
+
+```
+New Video[6604.630613-9797.852513].mp4      one segment, from 6604.630613s to 9797.852513s
+Interview[0-95.5, 120-300, 2710-end].mkv    three segments
+```
+
+* Each `start-end` range is a part to **keep**, in seconds (with decimals or not). Several ranges are separated by commas, spaces are allowed.
+* `0` is the beginning of the video, and `end` (or `END`) its end.
+* Only the brackets right before the extension count: `My [draft] clip[5-60].mp4` has one segment, from 5 to 60s.
+* Names that don't follow this are left alone, the video opens as usual, e.g. `Holiday[draft].mp4`, `[10-20] clip.mp4`, `clip[1:00-2:00].mp4`, or a range ending before it starts like `clip[20-10].mp4`.
+
+How it works: the container watches `/storage` (see `LOSSLESSCUT_FILENAME_SEGMENTS_PATHS` in [Environment Variables](#environment-variables)) and writes a LosslessCut project file next to each such video, e.g. `New Video[6604.630613-9797.852513]-proj.llc`, which LosslessCut loads when it opens the video.
+
+* Videos copied, moved or renamed into the folder get their project file a moment after the copy is complete. Videos already there are handled when the container starts.
+* An existing project file is never replaced. Once you've changed the segments in LosslessCut (which saves the project), your changes are kept. To go back to the segments of the file name, delete the `-proj.llc` file before opening the video again.
+* Project files created this way are removed when their video is deleted, moved away or renamed (a renamed video gets a new one), unless LosslessCut has saved changes to them.
+* Hidden folders and QNAP's system folders (`@Recycle`, `.@__thumb`, `.Trash-*`, ...) are skipped.
+* Lossless cuts start on a keyframe: an exported part can start a little before the time in the name (LosslessCut's usual *keyframe cut* behavior).
+* With a huge number of subfolders, the container may not be allowed to watch all of them: it then looks for new videos every minute instead, and says so in its log.
+
+### Export Defaults
+
+The image changes some of LosslessCut's default settings:
+
+| Setting (in LosslessCut) | Default of this image |
+|--------------------------|-----------------------|
+| Output file name template, for *Export* and for *Export + merge* | `${FILENAME.replace(/\[[^\]]*\]\s*/g, '').toUpperCase()}-trimmed${EXT}`: the name without its `[...]` parts, in capitals, followed by `-trimmed`, e.g. `New Video[6604.630613-9797.852513].mp4` → `NEW VIDEO-trimmed.mp4` |
+| Cleanup after export | Done automatically, without asking: move the source video, its project file and LosslessCut's temporary files to the trash, delete them permanently if they can't be moved to the trash, and close the file |
+
+* These are applied when LosslessCut starts, only to the settings you haven't changed: a template or cleanup choice you set yourself in LosslessCut is kept, also when updating the image. Set `LOSSLESSCUT_DEFAULT_SETTINGS=0` to keep LosslessCut's own defaults instead, or pass your own settings with `--settings-json` in `LOSSLESSCUT_ARGS` (the defaults are then skipped).
+* When several segments are exported as separate files (without merging), the template gives them all the same name, so LosslessCut uses its own template for them, which adds the segment number.
+* The trash: files on `/storage` are moved to the hidden `.Trash-<USER_ID>` folder at the top of the folder mapped to `/storage`, e.g. `/share/Multimedia/.Trash-500` on a QNAP NAS. It isn't emptied automatically. To restore a file, move it back from the `files` folder in there.
+* If the output file already exists, LosslessCut overwrites it without asking (its *Overwrite existing files* setting, on by default). Videos whose names only differ in their `[...]` part, e.g. `Clip[1-2].mp4` and `Clip[5-9].mp4`, both export to `CLIP-trimmed.mp4`: move or rename the first export before exporting the second one. Turning that setting off doesn't help here: LosslessCut then skips the existing file, still treats the export as done, and the cleanup runs.
 
 ### Hardware Acceleration
 
@@ -313,8 +359,9 @@ graphical interface of the application can be accessed via:
 
   * A web browser:
 ```
-http://<HOST IP ADDR>:5800
+https://<HOST IP ADDR>:5800
 ```
+(`http://` with `SECURE_CONNECTION=0`)
 
   * Any VNC client:
 ```
@@ -323,11 +370,8 @@ http://<HOST IP ADDR>:5800
 
 ## Security
 
-By default, access to the application's GUI is done over an unencrypted
-connection (HTTP or VNC).
-
-Secure connection can be enabled via the `SECURE_CONNECTION` environment
-variable.\
+By default, this image uses an encrypted connection (`SECURE_CONNECTION=1`), with a self-signed certificate (see [Certificates](#certificates)).
+To use an unencrypted connection (HTTP and VNC) instead, set `SECURE_CONNECTION=0` and `WEB_NOTIFICATION=0` (notifications need HTTPS).\
 See the [Environment Variables](#environment-variables) section for more details on how to set an environment variable.
 
 When enabled, application's GUI is performed over an HTTPs connection when accessed with a browser.\
@@ -394,11 +438,12 @@ creation (e.g. `losslesscut`).
 
 ```shell
 make          # build for the current architecture
-make test     # smoke test the image built by "make" (needs Docker, and vncdotool for screenshots)
+make unit-test  # test the scripts of the image (segments from file names, default settings, trash), no Docker needed
+make test     # the script tests, then smoke test the image built by "make" (needs Docker, and vncdotool for screenshots)
 make buildx   # build for amd64, arm64 and armv7
 ```
 
-The smoke test ([`helper-scripts/smoke-test.sh`](helper-scripts/smoke-test.sh)) starts the image with 3 CPUs and 2GB of memory, waits for it to be healthy, checks libraries, flags, user and priority of LosslessCut, then opens a generated video and exports a cut through LosslessCut's HTTP API. Logs and screenshots are written to `smoke-test-output/`.
+The smoke test ([`helper-scripts/smoke-test.sh`](helper-scripts/smoke-test.sh)) starts the image with 3 CPUs and 2GB of memory, waits for it to be healthy, checks libraries, flags, user and priority of LosslessCut, then opens generated videos and exports them through LosslessCut's HTTP API: project files from file names, export defaults (output names, cleanup to the trash), file dialog search, and notifications with the image's defaults (HTTPS). Logs and screenshots are written to `smoke-test-output/`.
 
 The build itself fails if a library needed by LosslessCut or FFmpeg is missing, on every architecture.
 
@@ -406,7 +451,7 @@ The build itself fails if a library needed by LosslessCut or FFmpeg is missing, 
 
 | Workflow | When | What |
 |----------|------|------|
-| [Build and test](.github/workflows/ci.yaml) | Every push and pull request | Builds for amd64 and runs the smoke test, and builds for arm64 and armv7. Screenshots and logs are available as an artifact of the run. |
+| [Build and test](.github/workflows/ci.yaml) | Every push and pull request | Runs the script tests, builds for amd64 and runs the smoke test, and builds for arm64 and armv7. Screenshots and logs are available as an artifact of the run. |
 | [Deploy image to registry](.github/workflows/build-and-deploy.yaml) | Pushes to `master`, tags, manually | Builds for amd64, arm64 and armv7, and publishes the image to `ghcr.io/<owner>/docker-losslesscut` (and Docker Hub when the `DOCKERHUB_USERNAME` and `DOCKERHUB_IMAGE` variables and the `DOCKERHUB_TOKEN` secret are set). Manual runs on other branches only build. |
 | [Check for LosslessCut updates](.github/workflows/update-losslesscut.yaml) | Mondays, manually | Opens a pull request when a new LosslessCut version is released, and starts "Build and test" on it. Merging it publishes the new image. |
 

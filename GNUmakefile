@@ -4,7 +4,8 @@
 # $ make        - Build for the current platform (only supports amd64, armv7 and arm64 on linux)
 # $ make buildx - Build multiplatform images
 # $ make push   - Push multiplatform images to the registry
-# $ make test   - Run the smoke test against the image built by "make"
+# $ make test   - Run the script tests, then the smoke test against the image built by "make"
+# $ make unit-test - Only the script tests (no Docker needed)
 
 IMAGE_NAME=jaleung/docker-losslesscut
 TAG:=latest
@@ -59,8 +60,13 @@ buildx-%:
 print-tags:
 	@echo $(ALL_TAGS)
 
+# Tests of the scripts added to the image (segments from file names, default
+#  settings), without Docker
+unit-test:
+	helper-scripts/test-scripts.sh
+
 # Start the image with NAS-like resource limits and check it works
-test:
+test: unit-test
 	helper-scripts/smoke-test.sh $(LABEL):$(TAG)
 
 # NOTE: The "buildx-noop" dependency is a way of passing no extra arguments to buildx-%
@@ -75,4 +81,4 @@ multiarch-builder:
 # Importing/exporting multiplatform images doesn't work (yet?)
 #load: buildx---load
 
-.PHONY: build buildx push test # DO NOT mark as phony buildx-* rules
+.PHONY: build buildx push test unit-test # DO NOT mark as phony buildx-* rules
