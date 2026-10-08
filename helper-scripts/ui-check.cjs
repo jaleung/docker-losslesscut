@@ -7,7 +7,9 @@
 //  - badge on the side panel's tab: a click opens the panel on the Auto-trim
 //    section, which shows SWITCH, RECENT_TEXT and WAITING_TEXT (07-side-panel.png)
 //  - status page URL/autotrim (redirected to autotrim/): WAITING_TEXT
-//    (09-status-page.png)
+//    (09-status-page.png), and its scratch pad: pasted line breaks removed,
+//    "[]" back with the cursor inside when emptied or cleared, check, copy
+//    (10-scratch-pad.png)
 //
 // Needs playwright-core (or playwright) and Chrome/Chromium (CHROME_PATH, or
 //  the browsers installed for Playwright).
@@ -33,7 +35,8 @@ function check(condition, message) {
 (async () => {
     const browser = await playwright.chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
     try {
-        const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+        // Clipboard: for the Copy button of the scratch pad
+        const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, permissions: ['clipboard-read', 'clipboard-write'] });
         const page = await context.newPage();
         const errors = [];
         page.on('pageerror', (err) => errors.push(err.message));
@@ -96,6 +99,44 @@ function check(condition, message) {
         }, waitingText, { timeout: 20000 });
         console.log(`  status page: ${(await statusPage.textContent('#autotrim_page')).replace(/\s+/g, ' ').trim().slice(0, 300)}`);
         await statusPage.screenshot({ path: `${outDir}/09-status-page.png`, fullPage: true });
+
+        // Scratch pad of the status page: ready on load, "[]" with the cursor inside
+        const scratch = () => statusPage.$eval('#autotrim_scratch', (f) => ({
+            value: f.value, caret: f.selectionStart, focused: document.activeElement === f,
+        }));
+        const scratchCheck = async () => (await statusPage.textContent('#autotrim_scratch_check')).trim();
+        const paste = (text) => statusPage.$eval('#autotrim_scratch', (f, t) => {
+            const data = new DataTransfer();
+            data.setData('text/plain', t);
+            f.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+        }, text);
+        let s = await scratch();
+        check(s.value === '[]' && s.caret === 1 && s.focused, `scratch pad on load: ${JSON.stringify(s)}`);
+        // Times copied from mpv, with their line break
+        await paste('968.968000 \r\n');
+        await statusPage.keyboard.type('-');
+        await paste('1000.5\n');
+        s = await scratch();
+        console.log(`  scratch pad: ${s.value} (${await scratchCheck()})`);
+        check(s.value === '[968.968000-1000.5]', `scratch pad after pasting: ${s.value}`);
+        check((await scratchCheck()).startsWith('✓ 1 part to keep: 16:08.968 → 16:40.500'), `scratch pad check: ${await scratchCheck()}`);
+        // Emptied: "[]" back, with the cursor inside
+        await statusPage.keyboard.press('Control+A');
+        await statusPage.keyboard.press('Backspace');
+        s = await scratch();
+        check(s.value === '[]' && s.caret === 1, `scratch pad emptied: ${JSON.stringify(s)}`);
+        await statusPage.keyboard.type('5-2');
+        console.log(`  scratch pad: [5-2] (${await scratchCheck()})`);
+        check((await scratchCheck()).startsWith('✗ Part 1 "5-2"'), `scratch pad check of a mistake: ${await scratchCheck()}`);
+        await statusPage.click('#autotrim_scratch_clear');
+        s = await scratch();
+        check(s.value === '[]' && s.caret === 1 && s.focused, `scratch pad cleared: ${JSON.stringify(s)}`);
+        await statusPage.keyboard.type('0-end');
+        await statusPage.click('#autotrim_scratch_copy');
+        await statusPage.waitForFunction(() => document.getElementById('autotrim_scratch_copy').textContent === 'Copied', null, { timeout: 5000 });
+        const clipboard = await statusPage.evaluate(() => navigator.clipboard.readText());
+        check(clipboard === '[0-end]', `copied: ${JSON.stringify(clipboard)}`);
+        await statusPage.locator('#autotrim_scratch_card').screenshot({ path: `${outDir}/10-scratch-pad.png` });
 
         if (errors.length > 0) console.log(`  page errors: ${errors.join(' | ')}`);
     } finally {

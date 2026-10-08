@@ -2,11 +2,89 @@
 // - Main page: a section in the side panel (switch, status, queue, results), a
 //   status box over LosslessCut while videos are trimmed or waiting, and a
 //   badge on the side panel's tab
-// - Status page (autotrim/, <body data-autotrim-page>): all of it, in full
+// - Status page (autotrim/, <body data-autotrim-page>): all of it, in full,
+//   and a scratch pad to write the [...] of a file name
 // API: autotrim/ (nginx -> /opt/losslesscut-tools/autotrim.cjs)
 
 (() => {
     'use strict';
+
+    //
+    // Scratch pad helpers, without side effects (also run by the tests in Node)
+    //
+
+    // Pasted text without its line breaks: times copied from mpv often come
+    //  with one (e.g. "968.968000 \r\n" from "echo ... | clip"). Each line is
+    //  trimmed, empty ones are dropped, the others joined with a space
+    function cleanPastedText(text) {
+        if (!/[\r\n]/.test(text)) return text;
+        return text.split(/\r\n|\r|\n/).map((line) => line.trim()).filter((line) => line !== '').join(' ');
+    }
+
+    // Seconds as h:mm:ss.mmm (m:ss.mmm under an hour)
+    function formatTime(seconds) {
+        const ms = Math.round(seconds * 1000);
+        const pad = (n, width = 2) => String(n).padStart(width, '0');
+        const h = Math.floor(ms / 3600000);
+        const m = Math.floor(ms / 60000) % 60;
+        const s = `${pad(Math.floor(ms / 1000) % 60)}${ms % 1000 ? `.${pad(ms % 1000, 3)}` : ''}`;
+        return h > 0 ? `${h}:${pad(m)}:${s}` : `${m}:${s}`;
+    }
+
+    const PART = /^([0-9]+(?:\.[0-9]+)?)[ \t]*-[ \t]*([0-9]+(?:\.[0-9]+)?|end)$/;
+
+    // Content of a [...] block, like "segments" in filename-segments:
+    //  { segments: [{ start, end }] } (end undefined for "end"), or { error }
+    function parseSpec(spec) {
+        if (/[[\]]/.test(spec)) return { error: '[ or ] inside the brackets' };
+        const parts = spec.split(',');
+        const segments = [];
+        for (const [i, raw] of parts.entries()) {
+            const part = raw.toLowerCase().replace(/^[ \t]+|[ \t]+$/g, '');
+            const label = `Part ${i + 1} "${raw.trim()}"`;
+            if (part === '') {
+                return { error: parts.length > 1 ? `Part ${i + 1} is empty (extra comma?)` : 'Nothing in the brackets' };
+            }
+            const match = PART.exec(part);
+            if (!match) {
+                return {
+                    error: part.includes(':')
+                        ? `${label}: times must be in seconds (e.g. 3725.5), not h:mm:ss`
+                        : `${label}: write start-end in seconds, e.g. 10-20 or 30-end`,
+                };
+            }
+            const start = Number(match[1]);
+            const end = match[2] === 'end' ? undefined : Number(match[2]);
+            if (end !== undefined && end <= start) return { error: `${label}: the end must be after the start` };
+            segments.push({ start, end });
+        }
+        return { segments };
+    }
+
+    // Segments of a file name, like "parse" in filename-segments: the [...]
+    //  block at the start of the name, else the one right before the extension
+    function parseNameSegments(text) {
+        let name = text.slice(text.lastIndexOf('/') + 1);
+        // Strip the extension, unless the last "." is in the [...] block
+        const dot = name.lastIndexOf('.');
+        if (!/[[\]]/.test(name.slice(dot + 1)) && dot >= 0) name = name.slice(0, dot);
+        let atStart;
+        if (name.startsWith('[') && name.includes(']')) {
+            atStart = parseSpec(name.slice(1, name.indexOf(']')));
+            if (!atStart.error) return atStart;
+        }
+        if (name.endsWith(']') && name.includes('[')) {
+            const atEnd = parseSpec(name.slice(name.lastIndexOf('[') + 1, -1));
+            return atStart && atEnd.error ? atStart : atEnd;
+        }
+        return atStart || { error: 'No [...] at the start or the end' };
+    }
+
+    if (typeof document === 'undefined') {
+        // Node: the tests
+        module.exports = { cleanPastedText, formatTime, parseNameSegments };
+        return;
+    }
 
     const isPage = document.body.hasAttribute('data-autotrim-page');
     // Relative URLs: work behind a reverse proxy with a sub-path
@@ -469,6 +547,122 @@
     // Status page
     //
 
+    // Scratch pad to write the [...] of a file name: line breaks of pasted
+    //  times are removed, "[]" comes back with the cursor inside when emptied,
+    //  and what's written is checked like filename-segments does
+    function scratchPad() {
+        const EMPTY = '[]';
+        const field = el('input', {
+            type: 'text', class: 'form-control font-monospace', id: 'autotrim_scratch',
+            spellcheck: 'false', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off',
+            'aria-label': 'Scratch pad for the [...] of a file name', 'aria-describedby': 'autotrim_scratch_check',
+        });
+        const copy = el('button', { type: 'button', class: 'btn btn-outline-secondary', id: 'autotrim_scratch_copy', style: 'min-width: 5.5rem;', text: 'Copy' });
+        const clear = el('button', { type: 'button', class: 'btn btn-outline-secondary', id: 'autotrim_scratch_clear', text: 'Clear' });
+        const check = el('div', { class: 'form-text', id: 'autotrim_scratch_check' });
+
+        const caretAt = (pos) => field.setSelectionRange(pos, pos);
+        // At the cursor, in the field's undo history (Ctrl+Z)
+        function insert(text) {
+            if (!document.execCommand('insertText', false, text)) {
+                field.setRangeText(text, field.selectionStart, field.selectionEnd, 'end');
+                field.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }
+        function showCheck() {
+            check.classList.remove('text-success-emphasis', 'text-danger-emphasis');
+            if (/^(\[\s*\])?$/.test(field.value.trim())) {
+                check.replaceChildren('Paste times in seconds from mpv, e.g. ', el('span', { class: 'text-nowrap', text: '[10-20,30-end]' }));
+                return;
+            }
+            const result = parseNameSegments(field.value);
+            if (result.error) {
+                check.textContent = `✗ ${result.error}`;
+                check.classList.add('text-danger-emphasis');
+                return;
+            }
+            const n = result.segments.length;
+            const parts = result.segments.map((s) => `${formatTime(s.start)} → ${s.end === undefined ? 'end' : formatTime(s.end)}`);
+            check.textContent = `✓ ${n} part${n > 1 ? 's' : ''} to keep: ${parts.join(', ')}`;
+            check.classList.add('text-success-emphasis');
+        }
+        // Empty: "[]" back, with the cursor inside
+        function reset() {
+            field.focus();
+            field.select();
+            insert(EMPTY);
+            caretAt(1);
+        }
+
+        field.value = store.get('scratch', EMPTY) || EMPTY;
+        showCheck();
+        field.addEventListener('paste', (e) => {
+            const text = e.clipboardData && e.clipboardData.getData('text/plain');
+            if (text == null || !/[\r\n]/.test(text)) return;
+            e.preventDefault();
+            const cleaned = cleanPastedText(text);
+            if (cleaned !== '') insert(cleaned);
+        });
+        field.addEventListener('input', (e) => {
+            // Browsers remove line breaks from single-line fields, but not all
+            //  of them for dropped text
+            if (/[\r\n]/.test(field.value)) field.value = cleanPastedText(field.value);
+            // Not when undoing: the next Ctrl+Z brings back what was deleted
+            if (field.value === '' && !/^history/.test(e.inputType || '')) {
+                reset();
+                return;
+            }
+            store.set('scratch', field.value);
+            showCheck();
+        });
+        // Into an empty "[]" (a click puts the cursor at the end)
+        const caretInsideEmpty = () => {
+            if (field.value === EMPTY) caretAt(1);
+        };
+        field.addEventListener('focus', () => setTimeout(caretInsideEmpty));
+        field.addEventListener('click', caretInsideEmpty);
+        clear.addEventListener('click', reset);
+
+        let copyTimer;
+        const showCopy = (text, style) => {
+            copy.textContent = text;
+            copy.classList.remove('btn-outline-secondary', 'btn-outline-success', 'btn-outline-danger');
+            copy.classList.add(style);
+        };
+        copy.addEventListener('click', async () => {
+            let copied = false;
+            try {
+                // HTTPS only (SECURE_CONNECTION)
+                await navigator.clipboard.writeText(field.value);
+                copied = true;
+            } catch {
+                const { selectionStart, selectionEnd } = field;
+                field.focus();
+                field.select();
+                copied = document.execCommand('copy');
+                field.setSelectionRange(selectionStart, selectionEnd);
+            }
+            if (copied) showCopy('Copied', 'btn-outline-success');
+            else showCopy('Copy failed', 'btn-outline-danger');
+            clearTimeout(copyTimer);
+            copyTimer = setTimeout(() => showCopy('Copy', 'btn-outline-secondary'), 2000);
+            field.focus();
+        });
+
+        return {
+            element: el('section', { class: 'card mb-3', id: 'autotrim_scratch_card' }, el('div', { class: 'card-body' },
+                el('h2', { class: 'h6 card-title', text: 'Scratch pad' }),
+                el('div', { class: 'input-group' }, field, copy, clear),
+                check)),
+            // Ready to paste: the cursor before the closing "]"
+            focus() {
+                field.focus({ preventScroll: true });
+                const close = field.value.lastIndexOf(']');
+                caretAt(close >= 0 ? close : field.value.length);
+            },
+        };
+    }
+
     function pageView() {
         const root = byId('autotrim_page');
         // Dark mode, like the main page
@@ -511,7 +705,9 @@
         const retry = el('button', { type: 'button', class: 'btn btn-outline-secondary btn-sm mt-2 d-none', text: 'Retry failed' });
         retry.addEventListener('click', () => post('retry', {}));
         const recentCard = card('Recent', recent, noRecent, retry);
-        root.replaceChildren(header, status, currentCard.element, queueCard.element, recentCard.element);
+        const scratch = scratchPad();
+        root.replaceChildren(header, status, scratch.element, currentCard.element, queueCard.element, recentCard.element);
+        scratch.focus();
 
         return {
             render(s) {
