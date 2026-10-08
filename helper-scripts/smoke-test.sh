@@ -263,6 +263,8 @@ for name in '[2-5,8-end]auto one.mp4' '[0-3]auto two.mp4'; do
 done
 # Name already taken: the trimmed video gets " (2)"
 cp "$clip" '/medias/auto/AUTO TWO-trimmed.mp4'
+# Renamed on the status page (keyframes every 2s, like the clip)
+cp "$clip" '/medias/rename me.mp4'
 # Being edited in LosslessCut: a project file saved by LosslessCut (without the
 #  generator's marker), there before the video so it's not generated
 cat > '/medias/auto/[0-3]edited-proj.llc' <<'LLC'
@@ -486,14 +488,14 @@ if command -v node >/dev/null \
     # While '[0-3]edited.mp4' waits: status box, badge, side panel, status page.
     #  On the status page, 'AUTO TWO-trimmed.mp4' (in a subfolder: found with
     #  Include subfolders) is renamed with [2-5] after confirming, then
-    #  'SMOKE FRONT-trimmed.mp4' without confirmation
+    #  'rename me.mp4' without confirmation
     node "$(dirname "$0")/ui-check.cjs" "http://127.0.0.1:$WEB_PORT/" "$OUT_DIR" on 'AUTO ONE-trimmed.mp4' '[0-3]edited.mp4' \
         'two-trimmed.mp4' '/medias/auto/AUTO TWO-trimmed.mp4' '2-5' 'AUTO TWO-trimmed[2-5].mp4' \
-        'smoke front' '/medias/SMOKE FRONT-trimmed.mp4' 'SMOKE FRONT-trimmed[2-5].mp4' \
+        'rename me' '/medias/rename me.mp4' 'rename me[2-5].mp4' \
         || fail "the auto-trim views don't work"
     log "Checking that the videos renamed on the status page are trimmed"
     for renamed in '/medias/auto/AUTO TWO-trimmed[2-5].mp4:/medias/auto/AUTO TWO-TRIMMED-trimmed.mp4' \
-        '/medias/SMOKE FRONT-trimmed[2-5].mp4:/medias/SMOKE FRONT-TRIMMED-trimmed.mp4'; do
+        '/medias/rename me[2-5].mp4:/medias/RENAME ME-trimmed.mp4'; do
         IFS=: read -r source output <<< "$renamed"
         wait_for_file "$output" 90 || fail "the renamed '$source' wasn't trimmed"
         duration="$(media_duration "$output")" || fail "trimmed file looks broken: $output"
