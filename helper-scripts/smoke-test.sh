@@ -263,6 +263,8 @@ for name in '[2-5,8-end]auto one.mp4' '[0-3]auto two.mp4'; do
 done
 # Name already taken: the trimmed video gets " (2)"
 cp "$clip" '/medias/auto/AUTO TWO-trimmed.mp4'
+# Renamed on the status page (keyframes every 2s, like the clip)
+cp "$clip" '/medias/rename me.mp4'
 # Being edited in LosslessCut: a project file saved by LosslessCut (without the
 #  generator's marker), there before the video so it's not generated
 cat > '/medias/auto/[0-3]edited-proj.llc' <<'LLC'
@@ -471,20 +473,36 @@ while IFS= read -r line; do echo "  $line"; done <<< "$autotrim_logs"
 concurrent="$(awk '/ trimming /{n++; if (n > m) m = n} / (done|failed|cancelled) /{n--} END {print m + 0}' <<< "$autotrim_logs")"
 [[ "$concurrent" == 1 ]] || fail "$concurrent trims at the same time, expected 1"
 if grep -q ' failed ' <<< "$autotrim_logs"; then fail "a background trim failed"; fi
+# The status page's video picker: the top of /medias, its subfolders too
+#  with subfolders=1
+videos="$(autotrim_api GET 'videos?q=two-trimmed.mp4')" || fail "videos API not reachable"
+grep -q '"total":0,' <<< "$videos" || fail "a video in a subfolder is listed without subfolders=1: $videos"
+videos="$(autotrim_api GET 'videos?q=two-trimmed.mp4&subfolders=1')" || fail "videos API not reachable"
+if ! grep -q '"total":1,' <<< "$videos" || ! grep -qF '"file":"/medias/auto/AUTO TWO-trimmed.mp4"' <<< "$videos"; then
+    fail "the video in a subfolder isn't listed with subfolders=1: $videos"
+fi
+echo "  video picker: /medias/auto/AUTO TWO-trimmed.mp4 listed only with its subfolders"
 if command -v node >/dev/null \
     && node -e "try { require.resolve('playwright-core') } catch { require.resolve('playwright') }" 2>/dev/null; then
     log "Checking the auto-trim views in a browser"
     # While '[0-3]edited.mp4' waits: status box, badge, side panel, status page.
-    #  On the status page, 'AUTO TWO-trimmed.mp4' is renamed with [2-5]
+    #  On the status page, 'AUTO TWO-trimmed.mp4' (in a subfolder: found with
+    #  Include subfolders) is renamed with [2-5] after confirming, then
+    #  'rename me.mp4' without confirmation
     node "$(dirname "$0")/ui-check.cjs" "http://127.0.0.1:$WEB_PORT/" "$OUT_DIR" on 'AUTO ONE-trimmed.mp4' '[0-3]edited.mp4' \
         'two-trimmed.mp4' '/medias/auto/AUTO TWO-trimmed.mp4' '2-5' 'AUTO TWO-trimmed[2-5].mp4' \
+        'rename me' '/medias/rename me.mp4' 'rename me[2-5].mp4' \
         || fail "the auto-trim views don't work"
-    log "Checking that the video renamed on the status page is trimmed"
-    wait_for_file '/medias/auto/AUTO TWO-TRIMMED-trimmed.mp4' 90 || fail "the renamed 'AUTO TWO-trimmed[2-5].mp4' wasn't trimmed"
-    duration="$(media_duration '/medias/auto/AUTO TWO-TRIMMED-trimmed.mp4')" || fail "trimmed file looks broken"
-    echo "  trimmed: /medias/auto/AUTO TWO-TRIMMED-trimmed.mp4 (${duration}s)"
-    between "$duration" 2.5 4.5 || fail "unexpected duration ${duration}s (expected 2.5-4.5 s)"
-    check_trashed '/medias/auto/AUTO TWO-trimmed[2-5].mp4'
+    log "Checking that the videos renamed on the status page are trimmed"
+    for renamed in '/medias/auto/AUTO TWO-trimmed[2-5].mp4:/medias/auto/AUTO TWO-TRIMMED-trimmed.mp4' \
+        '/medias/rename me[2-5].mp4:/medias/RENAME ME-trimmed.mp4'; do
+        IFS=: read -r source output <<< "$renamed"
+        wait_for_file "$output" 90 || fail "the renamed '$source' wasn't trimmed"
+        duration="$(media_duration "$output")" || fail "trimmed file looks broken: $output"
+        echo "  trimmed: $output (${duration}s)"
+        between "$duration" 2.5 4.5 || fail "unexpected duration ${duration}s for $output (expected 2.5-4.5 s)"
+        check_trashed "$source"
+    done
 else
     log "Auto-trim views not checked in a browser (needs node and playwright-core)"
 fi

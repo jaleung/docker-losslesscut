@@ -588,6 +588,12 @@
         });
     }
 
+    // A card's title, with an option on its right
+    function cardHeader(title, option) {
+        return el('div', { class: 'd-flex flex-wrap align-items-center justify-content-between column-gap-3 row-gap-1 mb-2' },
+            el('h2', { class: 'h6 card-title mb-0', text: title }), option);
+    }
+
     function addPageStyle() {
         document.head.append(el('style', { id: 'autotrim_page_style' }, `
             .autotrim-picker { position: relative; }
@@ -636,7 +642,8 @@
     }
 
     // Video file picker: a search field listing the matching videos of the
-    //  rename folder (/medias), newest first
+    //  rename folder (/medias), newest first, also in its subfolders when
+    //  switched on
     function videoPicker({ onPick }) {
         const field = el('input', {
             type: 'search', class: 'form-control', id: 'autotrim_video', placeholder: 'Search videos…',
@@ -645,14 +652,18 @@
         });
         const list = el('div', { class: 'list-group autotrim-picker-list d-none', id: 'autotrim_video_list', role: 'listbox' });
         const info = el('div', { class: 'form-text text-break', id: 'autotrim_video_info' });
+        const subfolders = el('input', { class: 'form-check-input', type: 'checkbox', role: 'switch', id: 'autotrim_video_subfolders' });
+        subfolders.checked = store.get('subfolders', false) === true;
         let folder = '/medias';
         let videos = [];
         let active = -1;
         let selected = null;
         let searchTimer;
         let searchId = 0;
-        // The text the list is for, and pick its first video when it's there
-        let listQuery = null;
+        // What the list is for (text, subfolders), and pick its first video when
+        //  it's there
+        let listKey = null;
+        const searchKey = () => JSON.stringify([field.value, subfolders.checked]);
         let pickFirst = false;
 
         // Clicks in the list keep the focus in the field
@@ -679,7 +690,7 @@
         function showInfo() {
             info.textContent = selected
                 ? `${selected.file} · ${formatSize(selected.size)} · modified ${when(selected.mtimeMs)}`
-                : `Videos in ${folder}, newest first`;
+                : `Videos in ${folder}${subfolders.checked ? ' and its subfolders' : ''}, newest first`;
         }
         function pick(video) {
             selected = video;
@@ -693,15 +704,16 @@
             searchId += 1;
             const id = searchId;
             const query = field.value;
+            const key = searchKey();
             let result;
             try {
-                result = await request(`videos?q=${encodeURIComponent(query)}`);
+                result = await request(`videos?q=${encodeURIComponent(query)}${subfolders.checked ? '&subfolders=1' : ''}`);
             } catch (err) {
                 result = { error: err.message };
             }
             // A newer search, or picked meanwhile
             if (id !== searchId || selected) return;
-            listQuery = query;
+            listKey = key;
             const items = [];
             videos = [];
             if (result.error) {
@@ -756,6 +768,13 @@
             if (!selected && !isOpen()) search();
         });
         field.addEventListener('blur', close);
+        // The list follows right away (a video already picked stays)
+        subfolders.addEventListener('change', () => {
+            store.set('subfolders', subfolders.checked);
+            showInfo();
+            field.focus();
+            if (!selected) search();
+        });
         field.addEventListener('keydown', (e) => {
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                 e.preventDefault();
@@ -766,7 +785,7 @@
                 }
             } else if (e.key === 'Enter' && !selected) {
                 e.preventDefault();
-                if (isOpen() && listQuery === field.value && active >= 0) {
+                if (isOpen() && listKey === searchKey() && active >= 0) {
                     pick(videos[active]);
                 } else {
                     // The list isn't for this text yet: the first match
@@ -782,7 +801,9 @@
 
         return {
             element: el('section', { class: 'card mb-3', id: 'autotrim_video_card' }, el('div', { class: 'card-body' },
-                el('h2', { class: 'h6 card-title', text: 'Video file' }),
+                // The switch above the field: the list opens under it
+                cardHeader('Video file', el('div', { class: 'form-check form-switch mb-0' }, subfolders,
+                    el('label', { class: 'form-check-label small', for: 'autotrim_video_subfolders', text: 'Include subfolders' }))),
                 el('div', { class: 'autotrim-picker' }, field, list),
                 info)),
             selected: () => selected,
@@ -973,11 +994,43 @@
                 note, dialogError,
                 el('div', { class: 'd-flex justify-content-end gap-2 mt-3' }, cancel, confirm)));
         document.body.append(dialog);
+        // Or right away, without the dialog (remembered by the browser)
+        const noConfirm = el('input', { class: 'form-check-input', type: 'checkbox', role: 'switch', id: 'autotrim_rename_noconfirm' });
+        noConfirm.checked = store.get('renameNoConfirm', false) === true;
+        noConfirm.addEventListener('change', () => store.set('renameNoConfirm', noConfirm.checked));
+
+        // Rename for real: onError(message) if it fails, onDone() before the
+        //  fields are cleared for the next video
+        async function renameNow(target, { onError, onDone = () => {} }) {
+            let res;
+            try {
+                res = await postJson('rename', { file: target.file, block: target.block });
+            } catch (err) {
+                res = { json: { error: err.message } };
+            }
+            if (res.status !== 200 || !res.json || res.json.error) {
+                onError(`✗ ${(res.json && res.json.error) || `HTTP ${res.status}`}`);
+                return;
+            }
+            onDone();
+            done.textContent = `✓ Renamed to ${res.json.name}`;
+            show(done, true);
+            picker.clear();
+            setField(EMPTY);
+            picker.focus();
+            refresh();
+        }
+
         let pending = null;
         dialog.addEventListener('close', () => { pending = null; });
         cancel.addEventListener('click', () => dialog.close());
         rename.addEventListener('click', () => {
             if (!ready) return;
+            if (noConfirm.checked) {
+                rename.disabled = true;
+                renameNow(ready, { onError: (message) => showPreview(message, true) });
+                return;
+            }
             pending = ready;
             from.textContent = pending.file;
             to.textContent = pending.name;
@@ -988,27 +1041,14 @@
             confirm.disabled = false;
             dialog.showModal();
         });
-        confirm.addEventListener('click', async () => {
+        confirm.addEventListener('click', () => {
             if (!pending) return;
             confirm.disabled = true;
-            let res;
-            try {
-                res = await postJson('rename', { file: pending.file, block: pending.block });
-            } catch (err) {
-                res = { json: { error: err.message } };
-            }
-            if (res.status !== 200 || !res.json || res.json.error) {
-                dialogError.textContent = `✗ ${(res.json && res.json.error) || `HTTP ${res.status}`}`;
-                return;
-            }
-            dialog.close();
-            done.textContent = `✓ Renamed to ${res.json.name}`;
-            show(done, true);
-            // Ready for the next video
-            picker.clear();
-            setField(EMPTY);
-            picker.focus();
-            refresh();
+            renameNow(pending, {
+                onError: (message) => { dialogError.textContent = message; },
+                // Closed first: the page can't have the focus while it's open
+                onDone: () => dialog.close(),
+            });
         });
 
         // Ready to paste: the cursor before the closing "]"
@@ -1020,7 +1060,8 @@
 
         return {
             element: el('section', { class: 'card mb-3', id: 'autotrim_scratch_card' }, el('div', { class: 'card-body' },
-                el('h2', { class: 'h6 card-title', text: 'Video renaming' }),
+                cardHeader('Video renaming', el('div', { class: 'form-check form-switch mb-0' }, noConfirm,
+                    el('label', { class: 'form-check-label small', for: 'autotrim_rename_noconfirm', text: 'Rename without confirmation' }))),
                 el('div', { class: 'input-group' }, field, copy, clear, rename),
                 check, preview, done)),
             // A video picked (or none)

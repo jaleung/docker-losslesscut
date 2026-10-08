@@ -251,15 +251,19 @@ test('video renaming: API on the socket', async () => {
         fs.utimesSync(file, time, time);
     };
     add('new video.mp4', 10);
-    add('sub/Holiday 2024.MKV', 20);
+    add('Holiday 2024.MKV', 20);
     add('[5-6]clip.mp4', 30);
     add('taken.mp4', 40);
     add('taken[0-1].mp4', 50);
-    // Not listed
+    // Listed with subfolders=1
+    add('sub/in a subfolder.mp4', 5);
+    add('sub/Holiday notes.mp4', 25);
+    // Never listed
     add('sub/holiday notes.txt', 0);
     add('.hidden/secret.mp4', 0);
     add('@Recycle/old.mp4', 0);
     add('sub/.autotrim-1-out.mp4', 0);
+    add('.autotrim-2-out.mp4', 0);
     fs.mkdirSync(outside);
     fs.writeFileSync(path.join(outside, 'x.mp4'), 'x');
     fs.symlinkSync(path.join(outside, 'x.mp4'), path.join(medias, 'link.mp4'));
@@ -294,13 +298,20 @@ test('video renaming: API on the socket', async () => {
             // eslint-disable-next-line no-await-in-loop
             await new Promise((r) => { setTimeout(r, 100); });
         }
-        // Newest first, without hidden, temp and other files, nor symbolic links
+        // The top folder: newest first, without hidden, temp and other files,
+        //  nor symbolic links
         let res = await request('GET', '/videos');
-        assert.deepEqual([res.json.exists, res.json.total], [true, 5]);
-        assert.deepEqual(names(res), ['new video.mp4', 'sub/Holiday 2024.MKV', '[5-6]clip.mp4', 'taken.mp4', 'taken[0-1].mp4']);
+        assert.deepEqual([res.json.exists, res.json.subfolders, res.json.total], [true, false, 5]);
+        assert.deepEqual(names(res), ['new video.mp4', 'Holiday 2024.MKV', '[5-6]clip.mp4', 'taken.mp4', 'taken[0-1].mp4']);
+        // With its subfolders
+        res = await request('GET', '/videos?subfolders=1');
+        assert.deepEqual([res.json.subfolders, res.json.total], [true, 7]);
+        assert.deepEqual(names(res), ['sub/in a subfolder.mp4', 'new video.mp4', 'Holiday 2024.MKV', 'sub/Holiday notes.mp4',
+            '[5-6]clip.mp4', 'taken.mp4', 'taken[0-1].mp4']);
         // Every word, anywhere in the path, in any case
-        res = await request('GET', `/videos?q=${encodeURIComponent(' HOLIDAY  sub ')}`);
-        assert.deepEqual(names(res), ['sub/Holiday 2024.MKV']);
+        res = await request('GET', `/videos?subfolders=1&q=${encodeURIComponent(' HOLIDAY  sub ')}`);
+        assert.deepEqual(names(res), ['sub/Holiday notes.mp4']);
+        assert.deepEqual(names(await request('GET', '/videos?q=holiday')), ['Holiday 2024.MKV']);
 
         // Dry run: the new name, nothing renamed
         const video = path.join(medias, 'new video.mp4');
@@ -315,6 +326,9 @@ test('video renaming: API on the socket', async () => {
         assert.deepEqual(names(await request('GET', '/videos?q=new')), ['new video[0-968.968,2080-end].mp4']);
         res = await request('POST', '/rename', { file: path.join(medias, '[5-6]clip.mp4'), block: '[1-2]', dryRun: true });
         assert.equal(res.json.name, 'clip[1-2].mp4');
+        // Also in a subfolder (Include subfolders)
+        res = await request('POST', '/rename', { file: path.join(medias, 'sub/in a subfolder.mp4'), block: '[1-2]', dryRun: true });
+        assert.deepEqual([res.status, res.json.name], [200, 'in a subfolder[1-2].mp4']);
 
         // Never over another file
         res = await request('POST', '/rename', { file: path.join(medias, 'taken.mp4'), block: '[0-1]' });
