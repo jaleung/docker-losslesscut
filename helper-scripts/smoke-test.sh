@@ -202,11 +202,26 @@ autotrim_api() {
     fi
 }
 
-# Main LosslessCut process (Electron's children have --type=...)
+# Main LosslessCut process: Electron's children have --type=..., and the
+#  background trimming runs LosslessCut's Electron too (autotrim.cjs)
 main_pid() {
     docker exec "$NAME" sh -c '
         for p in $(pidof losslesscut); do
-            tr "\0" " " < /proc/$p/cmdline | grep -q -- "--type=" || { echo $p; exit 0; }
+            case "$(tr "\0" " " < "/proc/$p/cmdline")" in
+                *--type=*|*autotrim.cjs*) ;;
+                *) echo "$p"; exit 0 ;;
+            esac
+        done
+        exit 1'
+}
+
+# Background trimming process
+autotrim_pid() {
+    docker exec "$NAME" sh -c '
+        for p in $(pidof losslesscut); do
+            case "$(tr "\0" " " < "/proc/$p/cmdline")" in
+                *autotrim.cjs*) echo "$p"; exit 0 ;;
+            esac
         done
         exit 1'
 }
@@ -357,7 +372,7 @@ grep -q 'src="app/autotrim.js' <<< "$page" || fail "the side panel script isn't 
 curl -fsS -o /dev/null "http://127.0.0.1:$WEB_PORT/app/autotrim.js" || fail "app/autotrim.js not served"
 status="$(autotrim_api GET status)" || fail "auto-trim API not reachable through nginx"
 grep -q '"enabled":false' <<< "$status" || fail "auto-trim should be off by default: $status"
-autotrim_pid="$(docker exec "$NAME" pgrep -f autotrim.cjs | head -n 1)" || fail "auto-trim service not running"
+autotrim_pid="$(autotrim_pid)" || fail "auto-trim service not running"
 autotrim_uid="$(docker exec "$NAME" awk '/^Uid:/{print $2}' "/proc/$autotrim_pid/status")"
 autotrim_nice="$(docker exec "$NAME" awk '{print $19}' "/proc/$autotrim_pid/stat")"
 echo "  uid: $autotrim_uid, niceness: $autotrim_nice"

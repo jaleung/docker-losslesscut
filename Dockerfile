@@ -105,7 +105,7 @@ RUN glib-compile-schemas /usr/share/glib-2.0/schemas \
     && chmod 0755 /startapp.sh /etc/cont-init.d/55-losslesscut.sh \
         /etc/services.d/filename-segments/run /etc/services.d/filename-segments/disabled \
         /etc/services.d/autotrim/run /etc/services.d/autotrim/disabled \
-        /opt/losslesscut-tools/filename-segments /usr/local/bin/gio
+        /opt/losslesscut-tools/filename-segments /opt/losslesscut-tools/healthcheck /usr/local/bin/gio
 
 # Background trimming (rootfs/opt/losslesscut-tools/autotrim.cjs): its section
 #  in the side panel of the web page, and its API at /autotrim/. The build
@@ -167,9 +167,7 @@ LABEL \
       org.opencontainers.image.licenses="GPL-2.0"
 
 # Slow CPUs (e.g. NAS) need a while to bring up Electron
-#  (WEB_LISTENING_PORT=-1 disables the web UI)
 # --start-interval: check often while starting, so it's reported healthy soon
 #  (ignored by Docker < 25)
-HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --start-interval=10s --retries=3 CMD \
-    pidof losslesscut >/dev/null \
-    && { [ "${WEB_LISTENING_PORT:-5800}" = "-1" ] || nc -z 127.0.0.1 "${WEB_LISTENING_PORT:-5800}" ; }
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --start-interval=10s --retries=3 \
+    CMD ["/opt/losslesscut-tools/healthcheck"]
