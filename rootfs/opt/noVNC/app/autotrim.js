@@ -2,8 +2,9 @@
 // - Main page: a section in the side panel (switch, status, queue, results), a
 //   status box over LosslessCut while videos are trimmed or waiting, and a
 //   badge on the side panel's tab
-// - Status page (autotrim/, <body data-autotrim-page>): all of it, in full,
-//   and a scratch pad to write the [...] of a file name
+// - Status page (autotrim/, <body data-autotrim-page>): all of it, in full
+//   (paged results), a dark mode switch, and video renaming: pick a video in
+//   /medias, write the [...] to add to its name, rename it
 // API: autotrim/ (nginx -> /opt/losslesscut-tools/autotrim.cjs)
 
 (() => {
@@ -211,11 +212,24 @@
     let last;
     let available = true;
     let timer;
+    // The status page shows all the last results, the others only a few
+    const STATUS_QUERY = isPage ? '?recent=all' : '';
 
     async function request(path, options) {
         const res = await fetch(API + path, { cache: 'no-store', ...options });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
+    }
+
+    // POST with a JSON body: { status, json }, also for errors
+    async function postJson(path, body) {
+        const res = await fetch(API + path, {
+            method: 'POST',
+            cache: 'no-store',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        return { status: res.status, json: await res.json().catch(() => null) };
     }
 
     function render(s) {
@@ -238,7 +252,7 @@
     async function refresh() {
         clearTimeout(timer);
         try {
-            const s = await request('status');
+            const s = await request(`status${STATUS_QUERY}`);
             available = true;
             render(s);
         } catch {
@@ -251,7 +265,7 @@
 
     async function post(path, body) {
         try {
-            render(await request(path, {
+            render(await request(`${path}${STATUS_QUERY}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
@@ -547,19 +561,260 @@
     // Status page
     //
 
-    // Scratch pad to write the [...] of a file name: line breaks of pasted
-    //  times are removed, "[]" comes back with the cursor inside when emptied,
-    //  and what's written is checked like filename-segments does
-    function scratchPad() {
+    // Bytes as e.g. "1.2 GB"
+    function formatSize(bytes) {
+        const units = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+        let n = bytes;
+        let i = 0;
+        while (n >= 1024 && i < units.length - 1) {
+            n /= 1024;
+            i += 1;
+        }
+        return `${i === 0 ? n : n.toFixed(n < 10 ? 1 : 0)} ${units[i]}`;
+    }
+
+    // Date and time, just the time for today
+    function when(value) {
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) return '';
+        const now = new Date();
+        if (d.toDateString() === now.toDateString()) return time(d);
+        return d.toLocaleString([], {
+            year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+    }
+
+    function addPageStyle() {
+        document.head.append(el('style', { id: 'autotrim_page_style' }, `
+            .autotrim-picker { position: relative; }
+            .autotrim-picker-list {
+                position: absolute; z-index: 1000; top: 100%; left: 0; right: 0; margin-top: 2px;
+                max-height: 20rem; overflow-y: auto; box-shadow: 0 .5rem 1rem rgba(0, 0, 0, .25);
+            }
+            .autotrim-dialog {
+                width: min(34rem, calc(100vw - 2rem)); padding: 0; border: 1px solid var(--bs-border-color);
+                border-radius: .5rem; background: var(--bs-body-bg); color: var(--bs-body-color);
+            }
+            .autotrim-dialog::backdrop { background: rgba(0, 0, 0, .5); }
+        `));
+    }
+
+    // Dark mode switch, remembered by the browser. Until it's used: dark with
+    //  the container's DARK_MODE, else like the system
+    function themeSwitch() {
+        const button = el('button', { type: 'button', class: 'btn btn-sm btn-outline-secondary', id: 'autotrim_theme' });
+        const system = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+        let containerDark = false;
+        const isDark = () => {
+            const chosen = store.get('theme', null);
+            return chosen ? chosen === 'dark' : containerDark || Boolean(system && system.matches);
+        };
+        function apply() {
+            const dark = isDark();
+            document.documentElement.setAttribute('data-bs-theme', dark ? 'dark' : 'light');
+            button.textContent = dark ? '☀️ Light' : '🌙 Dark';
+            button.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+        }
+        button.addEventListener('click', () => {
+            store.set('theme', isDark() ? 'light' : 'dark');
+            apply();
+        });
+        if (system && system.addEventListener) system.addEventListener('change', apply);
+        fetch('../webdata.json', { cache: 'no-store' })
+            .then((res) => res.json())
+            .then((data) => {
+                containerDark = Boolean(data && data.darkMode);
+                apply();
+            })
+            .catch(() => {});
+        apply();
+        return button;
+    }
+
+    // Video file picker: a search field listing the matching videos of the
+    //  rename folder (/medias), newest first
+    function videoPicker({ onPick }) {
+        const field = el('input', {
+            type: 'search', class: 'form-control', id: 'autotrim_video', placeholder: 'Search videos…',
+            autocomplete: 'off', spellcheck: 'false', role: 'combobox', 'aria-autocomplete': 'list',
+            'aria-expanded': 'false', 'aria-controls': 'autotrim_video_list', 'aria-label': 'Video to rename',
+        });
+        const list = el('div', { class: 'list-group autotrim-picker-list d-none', id: 'autotrim_video_list', role: 'listbox' });
+        const info = el('div', { class: 'form-text text-break', id: 'autotrim_video_info' });
+        let folder = '/medias';
+        let videos = [];
+        let active = -1;
+        let selected = null;
+        let searchTimer;
+        let searchId = 0;
+        // The text the list is for, and pick its first video when it's there
+        let listQuery = null;
+        let pickFirst = false;
+
+        // Clicks in the list keep the focus in the field
+        list.addEventListener('mousedown', (e) => e.preventDefault());
+
+        const isOpen = () => !list.classList.contains('d-none');
+        function close() {
+            show(list, false);
+            field.setAttribute('aria-expanded', 'false');
+            field.removeAttribute('aria-activedescendant');
+            active = -1;
+        }
+        function highlight(index) {
+            active = index;
+            list.querySelectorAll('[role="option"]').forEach((option, i) => {
+                option.classList.toggle('active', i === index);
+                option.setAttribute('aria-selected', String(i === index));
+                if (i === index) {
+                    field.setAttribute('aria-activedescendant', option.id);
+                    option.scrollIntoView({ block: 'nearest' });
+                }
+            });
+        }
+        function showInfo() {
+            info.textContent = selected
+                ? `${selected.file} · ${formatSize(selected.size)} · modified ${when(selected.mtimeMs)}`
+                : `Videos in ${folder}, newest first`;
+        }
+        function pick(video) {
+            selected = video;
+            field.value = video.dir ? `${video.dir}/${video.name}` : video.name;
+            close();
+            showInfo();
+            onPick(video);
+        }
+        async function search() {
+            clearTimeout(searchTimer);
+            searchId += 1;
+            const id = searchId;
+            const query = field.value;
+            let result;
+            try {
+                result = await request(`videos?q=${encodeURIComponent(query)}`);
+            } catch (err) {
+                result = { error: err.message };
+            }
+            // A newer search, or picked meanwhile
+            if (id !== searchId || selected) return;
+            listQuery = query;
+            const items = [];
+            videos = [];
+            if (result.error) {
+                items.push(el('div', { class: 'list-group-item text-danger-emphasis', text: `Can't list the videos: ${result.error}` }));
+            } else {
+                folder = result.folder;
+                videos = result.videos;
+                videos.forEach((video, i) => {
+                    const option = el('button', {
+                        type: 'button', class: 'list-group-item list-group-item-action py-1', role: 'option',
+                        id: `autotrim_video_option_${i}`, tabindex: '-1', title: video.file,
+                    },
+                    el('div', { class: 'text-truncate' }, video.name, parseNameSegments(video.name).error
+                        ? null : el('span', { class: 'badge text-bg-secondary fw-normal ms-1', text: 'has [..]' })),
+                    // Its folder in the rename folder (full path: tooltip)
+                    el('div', {
+                        class: 'small text-muted text-truncate',
+                        text: `${video.dir || folder} · ${formatSize(video.size)} · ${when(video.mtimeMs)}`,
+                    }));
+                    option.addEventListener('click', () => pick(video));
+                    items.push(option);
+                });
+                if (!result.exists) {
+                    items.push(el('div', { class: 'list-group-item text-muted', text: `${result.folder} isn't mapped into the container` }));
+                } else if (videos.length === 0) {
+                    items.push(el('div', { class: 'list-group-item text-muted', text: 'No video matches' }));
+                } else if (result.total > videos.length) {
+                    items.push(el('div', { class: 'list-group-item small text-muted', text: `${videos.length} of ${result.total}: type more to narrow it down` }));
+                }
+            }
+            list.replaceChildren(...items);
+            show(list, true);
+            field.setAttribute('aria-expanded', 'true');
+            highlight(videos.length > 0 ? 0 : -1);
+            showInfo();
+            if (pickFirst) {
+                pickFirst = false;
+                if (videos.length > 0) pick(videos[0]);
+            }
+        }
+
+        field.addEventListener('input', () => {
+            if (selected) {
+                selected = null;
+                onPick(null);
+            }
+            pickFirst = false;
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(search, 200);
+        });
+        field.addEventListener('click', () => {
+            if (!selected && !isOpen()) search();
+        });
+        field.addEventListener('blur', close);
+        field.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (!isOpen()) {
+                    search();
+                } else if (videos.length > 0) {
+                    highlight(Math.min(Math.max(active + (e.key === 'ArrowDown' ? 1 : -1), 0), videos.length - 1));
+                }
+            } else if (e.key === 'Enter' && !selected) {
+                e.preventDefault();
+                if (isOpen() && listQuery === field.value && active >= 0) {
+                    pick(videos[active]);
+                } else {
+                    // The list isn't for this text yet: the first match
+                    pickFirst = true;
+                    search();
+                }
+            } else if (e.key === 'Escape' && isOpen()) {
+                e.preventDefault();
+                close();
+            }
+        });
+        showInfo();
+
+        return {
+            element: el('section', { class: 'card mb-3', id: 'autotrim_video_card' }, el('div', { class: 'card-body' },
+                el('h2', { class: 'h6 card-title', text: 'Video file' }),
+                el('div', { class: 'autotrim-picker' }, field, list),
+                info)),
+            selected: () => selected,
+            clear() {
+                selected = null;
+                field.value = '';
+                close();
+                showInfo();
+            },
+            focus() {
+                field.focus({ preventScroll: true });
+            },
+        };
+    }
+
+    // Video renaming: the [...] of a file name, written in a field that removes
+    //  the line breaks of pasted times, comes back to "[]" with the cursor
+    //  inside when emptied, and checks it like filename-segments does. Rename
+    //  adds it to the name of the video picked above, before its extension
+    function videoRenaming(picker) {
         const EMPTY = '[]';
         const field = el('input', {
             type: 'text', class: 'form-control font-monospace', id: 'autotrim_scratch',
             spellcheck: 'false', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off',
-            'aria-label': 'Scratch pad for the [...] of a file name', 'aria-describedby': 'autotrim_scratch_check',
+            'aria-label': 'The [...] of a file name', 'aria-describedby': 'autotrim_scratch_check',
         });
-        const copy = el('button', { type: 'button', class: 'btn btn-outline-secondary', id: 'autotrim_scratch_copy', style: 'min-width: 5.5rem;', text: 'Copy' });
-        const clear = el('button', { type: 'button', class: 'btn btn-outline-secondary', id: 'autotrim_scratch_clear', text: 'Clear' });
+        const copy = el('button', { type: 'button', class: 'btn btn-outline-primary', id: 'autotrim_scratch_copy', style: 'min-width: 5.5rem;', text: 'Copy' });
+        const clear = el('button', { type: 'button', class: 'btn btn-outline-danger', id: 'autotrim_scratch_clear', text: 'Clear' });
+        const rename = el('button', { type: 'button', class: 'btn btn-success', id: 'autotrim_rename', text: 'Rename' });
         const check = el('div', { class: 'form-text', id: 'autotrim_scratch_check' });
+        const preview = el('div', { class: 'form-text text-break', id: 'autotrim_rename_preview' });
+        const done = el('div', { class: 'small text-break text-success-emphasis mt-2 d-none', id: 'autotrim_rename_result', role: 'status' });
 
         const caretAt = (pos) => field.setSelectionRange(pos, pos);
         // At the cursor, in the field's undo history (Ctrl+Z)
@@ -586,6 +841,58 @@
             check.textContent = `✓ ${n} part${n > 1 ? 's' : ''} to keep: ${parts.join(', ')}`;
             check.classList.add('text-success-emphasis');
         }
+
+        // The new name, from the trimmer (dry run): Rename is only possible then
+        let ready = null; // { file, block, name }
+        let previewTimer;
+        let previewId = 0;
+        function showPreview(text, error = false) {
+            preview.textContent = text;
+            preview.classList.toggle('text-danger-emphasis', error);
+        }
+        function updatePreview() {
+            clearTimeout(previewTimer);
+            previewId += 1;
+            const id = previewId;
+            ready = null;
+            rename.disabled = true;
+            const video = picker.selected();
+            const block = field.value.trim();
+            if (!video) {
+                showPreview('Pick a video above to rename it');
+            } else if (/^(\[\s*\])?$/.test(block)) {
+                showPreview('');
+            } else if (!/^\[[^[\]]*\]$/.test(block)) {
+                showPreview('Rename needs just the [...] in the field', true);
+            } else if (parseNameSegments(block).error) {
+                // The check above says what's wrong
+                showPreview('');
+            } else {
+                showPreview('…');
+                previewTimer = setTimeout(async () => {
+                    let res;
+                    try {
+                        res = await postJson('rename', { file: video.file, block, dryRun: true });
+                    } catch (err) {
+                        res = { json: { error: err.message } };
+                    }
+                    if (id !== previewId) return;
+                    if (res.status !== 200 || !res.json || res.json.error) {
+                        showPreview(`✗ ${(res.json && res.json.error) || `HTTP ${res.status}`}`, true);
+                        return;
+                    }
+                    ready = { file: video.file, block, name: res.json.name };
+                    showPreview(`New name: ${res.json.name}`);
+                    rename.disabled = false;
+                }, 300);
+            }
+        }
+        function setField(value) {
+            field.value = value;
+            store.set('scratch', value);
+            showCheck();
+            updatePreview();
+        }
         // Empty: "[]" back, with the cursor inside
         function reset() {
             field.focus();
@@ -596,6 +903,7 @@
 
         field.value = store.get('scratch', EMPTY) || EMPTY;
         showCheck();
+        updatePreview();
         field.addEventListener('paste', (e) => {
             const text = e.clipboardData && e.clipboardData.getData('text/plain');
             if (text == null || !/[\r\n]/.test(text)) return;
@@ -614,6 +922,7 @@
             }
             store.set('scratch', field.value);
             showCheck();
+            updatePreview();
         });
         // Into an empty "[]" (a click puts the cursor at the end)
         const caretInsideEmpty = () => {
@@ -626,7 +935,7 @@
         let copyTimer;
         const showCopy = (text, style) => {
             copy.textContent = text;
-            copy.classList.remove('btn-outline-secondary', 'btn-outline-success', 'btn-outline-danger');
+            copy.classList.remove('btn-outline-primary', 'btn-outline-success', 'btn-outline-danger');
             copy.classList.add(style);
         };
         copy.addEventListener('click', async () => {
@@ -645,33 +954,89 @@
             if (copied) showCopy('Copied', 'btn-outline-success');
             else showCopy('Copy failed', 'btn-outline-danger');
             clearTimeout(copyTimer);
-            copyTimer = setTimeout(() => showCopy('Copy', 'btn-outline-secondary'), 2000);
+            copyTimer = setTimeout(() => showCopy('Copy', 'btn-outline-primary'), 2000);
             field.focus();
         });
 
+        // Confirmation dialog
+        const from = el('div', { class: 'text-break', id: 'autotrim_rename_from' });
+        const to = el('div', { class: 'font-monospace text-break', id: 'autotrim_rename_to' });
+        const note = el('div', { class: 'small text-muted mt-2' });
+        const dialogError = el('div', { class: 'small text-danger-emphasis mt-2', id: 'autotrim_rename_error' });
+        const cancel = el('button', { type: 'button', class: 'btn btn-outline-secondary', id: 'autotrim_rename_cancel', text: 'Cancel' });
+        const confirm = el('button', { type: 'button', class: 'btn btn-success', id: 'autotrim_rename_confirm', autofocus: '', text: 'Rename' });
+        const dialog = el('dialog', { class: 'autotrim-dialog', id: 'autotrim_rename_dialog', 'aria-labelledby': 'autotrim_rename_title' },
+            el('div', { class: 'p-3' },
+                el('h2', { class: 'h5 mb-3', id: 'autotrim_rename_title', text: 'Rename this video?' }),
+                el('div', { class: 'small text-muted', text: 'From' }), from,
+                el('div', { class: 'small text-muted mt-2', text: 'To' }), to,
+                note, dialogError,
+                el('div', { class: 'd-flex justify-content-end gap-2 mt-3' }, cancel, confirm)));
+        document.body.append(dialog);
+        let pending = null;
+        dialog.addEventListener('close', () => { pending = null; });
+        cancel.addEventListener('click', () => dialog.close());
+        rename.addEventListener('click', () => {
+            if (!ready) return;
+            pending = ready;
+            from.textContent = pending.file;
+            to.textContent = pending.name;
+            note.textContent = last && last.enabled
+                ? 'Auto-trim is on: it trims the video within a minute or so.'
+                : 'Auto-trim is off: switch it on to trim the video.';
+            dialogError.textContent = '';
+            confirm.disabled = false;
+            dialog.showModal();
+        });
+        confirm.addEventListener('click', async () => {
+            if (!pending) return;
+            confirm.disabled = true;
+            let res;
+            try {
+                res = await postJson('rename', { file: pending.file, block: pending.block });
+            } catch (err) {
+                res = { json: { error: err.message } };
+            }
+            if (res.status !== 200 || !res.json || res.json.error) {
+                dialogError.textContent = `✗ ${(res.json && res.json.error) || `HTTP ${res.status}`}`;
+                return;
+            }
+            dialog.close();
+            done.textContent = `✓ Renamed to ${res.json.name}`;
+            show(done, true);
+            // Ready for the next video
+            picker.clear();
+            setField(EMPTY);
+            picker.focus();
+            refresh();
+        });
+
+        // Ready to paste: the cursor before the closing "]"
+        function focusInside() {
+            field.focus({ preventScroll: true });
+            const close = field.value.lastIndexOf(']');
+            caretAt(close >= 0 ? close : field.value.length);
+        }
+
         return {
             element: el('section', { class: 'card mb-3', id: 'autotrim_scratch_card' }, el('div', { class: 'card-body' },
-                el('h2', { class: 'h6 card-title', text: 'Scratch pad' }),
-                el('div', { class: 'input-group' }, field, copy, clear),
-                check)),
-            // Ready to paste: the cursor before the closing "]"
-            focus() {
-                field.focus({ preventScroll: true });
-                const close = field.value.lastIndexOf(']');
-                caretAt(close >= 0 ? close : field.value.length);
+                el('h2', { class: 'h6 card-title', text: 'Video renaming' }),
+                el('div', { class: 'input-group' }, field, copy, clear, rename),
+                check, preview, done)),
+            // A video picked (or none)
+            picked(video) {
+                if (video) {
+                    show(done, false);
+                    focusInside();
+                }
+                updatePreview();
             },
         };
     }
 
     function pageView() {
         const root = byId('autotrim_page');
-        // Dark mode, like the main page
-        fetch('../webdata.json', { cache: 'no-store' })
-            .then((res) => res.json())
-            .then((data) => {
-                if (data.darkMode) document.documentElement.setAttribute('data-bs-theme', 'dark');
-            })
-            .catch(() => {});
+        addPageStyle();
 
         const toggle = el('input', { class: 'form-check-input', type: 'checkbox', role: 'switch', id: 'autotrim_page_enabled' });
         toggle.addEventListener('change', async () => {
@@ -682,6 +1047,7 @@
         const status = el('p', { class: 'text-muted' });
         const header = el('div', { class: 'd-flex flex-wrap align-items-center gap-3 mb-2' },
             el('h1', { class: 'h4 mb-0 me-auto', text: 'Auto-trim' }),
+            themeSwitch(),
             el('div', { class: 'form-check form-switch mb-0' }, toggle,
                 el('label', { class: 'form-check-label', for: 'autotrim_page_enabled', text: 'Trim in the background' })),
             el('a', { href: '../', class: 'btn btn-sm btn-outline-secondary', text: 'Back to LosslessCut' }));
@@ -700,14 +1066,51 @@
         const queue = el('ol', { class: 'mb-0 ps-4', id: 'autotrim_page_queue' });
         const noQueue = el('p', { class: 'text-muted mb-0', text: 'Nothing is waiting.' });
         const queueCard = card('Waiting', queue, noQueue);
+
+        // Results, a page at a time
+        const PAGE_SIZE = 10;
+        let results = [];
+        let page = 0;
         const recent = el('ul', { class: 'list-unstyled mb-0', id: 'autotrim_page_recent' });
         const noRecent = el('p', { class: 'text-muted mb-0', text: 'Nothing trimmed yet.' });
+        const newer = el('button', { type: 'button', class: 'btn btn-sm btn-outline-secondary', id: 'autotrim_recent_newer', text: '‹ Newer' });
+        const older = el('button', { type: 'button', class: 'btn btn-sm btn-outline-secondary', id: 'autotrim_recent_older', text: 'Older ›' });
+        const range = el('span', { class: 'small text-muted', id: 'autotrim_recent_range' });
+        const pager = el('div', { class: 'd-flex align-items-center gap-2 mt-2', id: 'autotrim_recent_pager' }, newer, range, older);
         const retry = el('button', { type: 'button', class: 'btn btn-outline-secondary btn-sm mt-2 d-none', text: 'Retry failed' });
         retry.addEventListener('click', () => post('retry', {}));
-        const recentCard = card('Recent', recent, noRecent, retry);
-        const scratch = scratchPad();
-        root.replaceChildren(header, status, scratch.element, currentCard.element, queueCard.element, recentCard.element);
-        scratch.focus();
+        const recentCard = card('Recent', recent, noRecent, pager, retry);
+        function showResults() {
+            const pages = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
+            page = Math.min(Math.max(page, 0), pages - 1);
+            const first = page * PAGE_SIZE;
+            const shown = results.slice(first, first + PAGE_SIZE);
+            recent.replaceChildren(...shown.map((r) => {
+                const li = resultItem(r, { truncate: false });
+                li.prepend(el('span', { class: 'text-muted me-2', text: when(r.at) }));
+                return li;
+            }));
+            show(recent, results.length > 0);
+            show(noRecent, results.length === 0);
+            show(pager, results.length > PAGE_SIZE);
+            range.textContent = `${first + 1}–${first + shown.length} of ${results.length}`;
+            newer.disabled = page === 0;
+            older.disabled = page >= pages - 1;
+        }
+        newer.addEventListener('click', () => {
+            page -= 1;
+            showResults();
+        });
+        older.addEventListener('click', () => {
+            page += 1;
+            showResults();
+        });
+
+        let renaming;
+        const picker = videoPicker({ onPick: (video) => renaming.picked(video) });
+        renaming = videoRenaming(picker);
+        root.replaceChildren(header, status, picker.element, renaming.element, currentCard.element, queueCard.element, recentCard.element);
+        picker.focus();
 
         return {
             render(s) {
@@ -733,13 +1136,8 @@
                 }));
                 show(queue, waiting.length > 0);
                 show(noQueue, waiting.length === 0);
-                recent.replaceChildren(...s.recent.map((r) => {
-                    const li = resultItem(r, { truncate: false });
-                    li.prepend(el('span', { class: 'text-muted me-2', text: time(r.at) }));
-                    return li;
-                }));
-                show(recent, s.recent.length > 0);
-                show(noRecent, s.recent.length === 0);
+                results = s.recent;
+                showResults();
                 show(retry, (s.failed || []).length > 0);
             },
             unavailable() {

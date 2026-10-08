@@ -215,6 +215,150 @@ test('status page and API on the socket', async () => {
     }
 });
 
+test('video renaming: new names', async () => {
+    const cases = [
+        ['new video.mp4', '[0-1]', 'new video[0-1].mp4'],
+        // An existing segments block is replaced, other brackets are kept
+        ['[5-6]clip.mp4', '[0-1]', 'clip[0-1].mp4'],
+        ['[5-6] clip.mp4', '[0-1]', 'clip[0-1].mp4'],
+        ['clip [5-6].mp4', '[0-1]', 'clip[0-1].mp4'],
+        ['[1-2]clip[3-4].MP4', '[0-1]', 'clip[0-1].MP4'],
+        ['[0-968.968000,2080.078000-end]new video.mp4', '[1-2]', 'new video[1-2].mp4'],
+        ['[draft]clip.mp4', '[0-1]', '[draft]clip[0-1].mp4'],
+        ['my [draft] clip[5-6].mp4', '[0-1]', 'my [draft] clip[0-1].mp4'],
+        ['a.b.mkv', '[0-1]', 'a.b[0-1].mkv'],
+        ['[1-2].mp4', '[0-1]', '[0-1].mp4'],
+    ];
+    for (const [name, block, expected] of cases) {
+        // eslint-disable-next-line no-await-in-loop
+        assert.equal(await at.nameWithSegments(name, block), expected, name);
+    }
+});
+
+test('video renaming: API on the socket', async () => {
+    const os = require('node:os');
+    const http = require('node:http');
+    const { spawn } = require('node:child_process');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'autotrim-test-'));
+    const medias = path.join(dir, 'medias');
+    const outside = path.join(dir, 'outside');
+    const socket = path.join(dir, 'at.sock');
+    const add = (rel, ageSeconds) => {
+        const file = path.join(medias, rel);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, rel);
+        const time = new Date(Date.now() - ageSeconds * 1000);
+        fs.utimesSync(file, time, time);
+    };
+    add('new video.mp4', 10);
+    add('sub/Holiday 2024.MKV', 20);
+    add('[5-6]clip.mp4', 30);
+    add('taken.mp4', 40);
+    add('taken[0-1].mp4', 50);
+    // Not listed
+    add('sub/holiday notes.txt', 0);
+    add('.hidden/secret.mp4', 0);
+    add('@Recycle/old.mp4', 0);
+    add('sub/.autotrim-1-out.mp4', 0);
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'x.mp4'), 'x');
+    fs.symlinkSync(path.join(outside, 'x.mp4'), path.join(medias, 'link.mp4'));
+    fs.symlinkSync(outside, path.join(medias, 'linked folder'));
+    const recent = Array.from({ length: 12 }, (_, i) => ({
+        file: `/medias/v${i}.mp4`, output: `/medias/V${i}-trimmed.mp4`, ok: true, at: new Date().toISOString(),
+    }));
+    fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ enabled: false, done: {}, failed: {}, recent }));
+    const daemon = spawn(process.execPath, [path.join(root, 'rootfs/opt/losslesscut-tools/autotrim.cjs')], {
+        env: {
+            ...process.env,
+            AUTOTRIM_SOCKET: socket,
+            AUTOTRIM_STATE_FILE: path.join(dir, 'state.json'),
+            AUTOTRIM_RENAME_FOLDER: medias,
+            LOSSLESSCUT_FILENAME_SEGMENTS_PATHS: medias,
+        },
+        stdio: 'ignore',
+    });
+    const request = (method, urlPath, body, type = 'application/json') => new Promise((resolve, reject) => {
+        const data = body === undefined ? '' : (typeof body === 'string' ? body : JSON.stringify(body));
+        const req = http.request({ socketPath: socket, path: urlPath, method, headers: { 'Content-Type': type } }, (res) => {
+            let text = '';
+            res.on('data', (d) => { text += d; });
+            res.on('end', () => resolve({ status: res.statusCode, json: JSON.parse(text || 'null') }));
+        });
+        req.on('error', reject);
+        req.end(data);
+    });
+    const names = (res) => res.json.videos.map((v) => path.join(v.dir, v.name));
+    try {
+        for (let i = 0; i < 50 && !fs.existsSync(socket); i += 1) {
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise((r) => { setTimeout(r, 100); });
+        }
+        // Newest first, without hidden, temp and other files, nor symbolic links
+        let res = await request('GET', '/videos');
+        assert.deepEqual([res.json.exists, res.json.total], [true, 5]);
+        assert.deepEqual(names(res), ['new video.mp4', 'sub/Holiday 2024.MKV', '[5-6]clip.mp4', 'taken.mp4', 'taken[0-1].mp4']);
+        // Every word, anywhere in the path, in any case
+        res = await request('GET', `/videos?q=${encodeURIComponent(' HOLIDAY  sub ')}`);
+        assert.deepEqual(names(res), ['sub/Holiday 2024.MKV']);
+
+        // Dry run: the new name, nothing renamed
+        const video = path.join(medias, 'new video.mp4');
+        res = await request('POST', '/rename', { file: video, block: '[0-968.968,2080-end]', dryRun: true });
+        assert.deepEqual([res.status, res.json.name, res.json.renamed], [200, 'new video[0-968.968,2080-end].mp4', false]);
+        assert.ok(fs.existsSync(video));
+        res = await request('POST', '/rename', { file: video, block: ' [0-968.968,2080-end] ' });
+        assert.deepEqual([res.status, res.json.renamed], [200, true]);
+        assert.equal(res.json.file, path.join(medias, 'new video[0-968.968,2080-end].mp4'));
+        assert.ok(!fs.existsSync(video) && fs.existsSync(res.json.file));
+        // Listed under its new name right away
+        assert.deepEqual(names(await request('GET', '/videos?q=new')), ['new video[0-968.968,2080-end].mp4']);
+        res = await request('POST', '/rename', { file: path.join(medias, '[5-6]clip.mp4'), block: '[1-2]', dryRun: true });
+        assert.equal(res.json.name, 'clip[1-2].mp4');
+
+        // Never over another file
+        res = await request('POST', '/rename', { file: path.join(medias, 'taken.mp4'), block: '[0-1]' });
+        assert.equal(res.status, 409, JSON.stringify(res.json));
+        assert.match(res.json.error, /already a file named "taken\[0-1\]\.mp4"/);
+        // Refused
+        for (const [file, block] of [
+            ['/etc/passwd', '[0-1]'],
+            [path.join(outside, 'x.mp4'), '[0-1]'],
+            [`${medias}/../outside/x.mp4`, '[0-1]'],
+            [path.join(medias, 'link.mp4'), '[0-1]'],
+            [path.join(medias, 'linked folder', 'x.mp4'), '[0-1]'],
+            [path.join(medias, '.hidden/secret.mp4'), '[0-1]'],
+            [path.join(medias, 'sub/holiday notes.txt'), '[0-1]'],
+            [path.join(medias, 'missing.mp4'), '[0-1]'],
+            [42, '[0-1]'],
+            [path.join(medias, 'taken.mp4'), '[5-2]'],
+            [path.join(medias, 'taken.mp4'), '[0-1]x'],
+            [path.join(medias, 'taken.mp4'), '[0-1/2]'],
+            [path.join(medias, 'taken.mp4'), '[1-2\n]'],
+            [path.join(medias, 'taken.mp4'), '[1-2\t,3-4\r]'],
+            [path.join(medias, 'taken.mp4'), undefined],
+            [path.join(medias, 'taken[0-1].mp4'), '[0-1]'],
+        ]) {
+            // eslint-disable-next-line no-await-in-loop
+            res = await request('POST', '/rename', { file, block });
+            assert.equal(res.status, 400, `${file} ${block}: ${JSON.stringify(res.json)}`);
+        }
+        assert.ok(fs.existsSync(path.join(outside, 'x.mp4')) && fs.lstatSync(path.join(medias, 'link.mp4')).isSymbolicLink());
+        assert.equal((await request('POST', '/rename', 'file=x', 'application/x-www-form-urlencoded')).status, 415);
+
+        // The last 5 results, or all of them
+        assert.equal((await request('GET', '/status')).json.recent.length, 5);
+        assert.equal((await request('GET', '/status?recent=all')).json.recent.length, 12);
+        // No rename folder
+        fs.renameSync(medias, `${medias}-gone`);
+        res = await request('GET', '/videos');
+        assert.deepEqual([res.json.exists, res.json.total], [false, 0]);
+    } finally {
+        daemon.kill();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test('short error messages', () => {
     assert.equal(at.cleanError('[mov,mp4,m4a,3gp,3g2,mj2 @ 0x5610169aa0c0] moov atom not found /medias/a b/[0-3]x.mp4: Invalid data', '/medias/a b/[0-3]x.mp4'),
         'moov atom not found [0-3]x.mp4: Invalid data');
