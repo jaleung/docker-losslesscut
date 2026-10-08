@@ -24,8 +24,11 @@
 // - The output keeps the source's modified time, permissions and tags (also
 //   when segments are merged), within LosslessCut's metadata settings
 // - HTTP API on a unix socket, reached through nginx at /autotrim/:
-//   GET /status, POST /enabled {"enabled": true|false}, POST /scan,
-//   POST /retry (failed videos are tried again), and GET / for the status page
+//   GET /status (?recent=all: all the last results, else the last 5),
+//   POST /enabled {"enabled": true|false}, POST /scan, POST /retry (failed
+//   videos are tried again), GET / for the status page, and for its video
+//   renaming: GET /videos?q=WORDS (videos in /medias) and
+//   POST /rename {"file", "block", "dryRun"} (adds "[...]" to a video's name)
 
 'use strict';
 
@@ -58,6 +61,8 @@ const config = {
     gio: env.AUTOTRIM_GIO || 'gio',
     ionice: env.AUTOTRIM_IONICE || '/usr/bin/ionice',
     page: env.AUTOTRIM_PAGE || path.join(__dirname, 'autotrim-page.html'),
+    // Videos that can be renamed from the status page
+    renameFolder: path.resolve(env.AUTOTRIM_RENAME_FOLDER || '/medias'),
 };
 
 // Same list as filename-segments
@@ -66,7 +71,12 @@ const VIDEO_EXTENSIONS = new Set('mp4 m4v mov mkv webm avi ts m2ts mts mpg mpeg 
 const TEMP_PREFIX = '.autotrim-';
 // In the project files created by filename-segments (LosslessCut's don't have it)
 const GENERATED_MARKER = '"generatedBy": "docker-losslesscut filename-segments"';
-const RECENT_MAX = 20;
+const RECENT_MAX = 100;
+// Results in GET /status without ?recent=all (side panel, status box)
+const RECENT_SHORT = 5;
+// Videos listed for the status page's picker
+const VIDEOS_MAX = 50;
+const VIDEOS_CACHE_MS = 15000;
 
 // LosslessCut's defaults (used when its settings don't have a template)
 const DEFAULT_CUT_TEMPLATE = '${FILENAME}-${CUT_FROM}-${CUT_TO}${SEG_SUFFIX}${EXT}';
@@ -661,8 +671,11 @@ async function getFolders() {
     }
 }
 
-// Videos with brackets in their name under dir, and leftover temp files
-async function walk(dir, found, leftovers) {
+const hasBrackets = (name) => /\[.*\]/.test(name);
+
+// Videos under dir (by default those with brackets in their name), and
+//  leftover temp files
+async function walk(dir, found, leftovers, wanted = hasBrackets) {
     let entries;
     try {
         entries = await fsp.readdir(dir, { withFileTypes: true });
@@ -677,8 +690,8 @@ async function walk(dir, found, leftovers) {
             // skipped
         } else if (entry.isDirectory()) {
             // eslint-disable-next-line no-await-in-loop
-            await walk(file, found, leftovers);
-        } else if (entry.isFile() && /\[.*\]/.test(entry.name) && isVideoFile(entry.name)) {
+            await walk(file, found, leftovers, wanted);
+        } else if (entry.isFile() && wanted(entry.name) && isVideoFile(entry.name)) {
             // eslint-disable-next-line no-await-in-loop
             const st = await fsp.stat(file).catch(() => undefined);
             if (st) found.set(file, statKey(st));
@@ -947,10 +960,116 @@ async function setEnabled(enabled) {
 }
 
 //
+// Renaming, from the status page
+//
+
+let videoList; // { at, promise }: the videos in config.renameFolder
+
+// Videos in the rename folder, newest first (listed again after a while)
+function listVideos() {
+    if (!videoList || Date.now() - videoList.at > VIDEOS_CACHE_MS) {
+        const promise = (async () => {
+            const found = new Map();
+            await walk(config.renameFolder, found, [], () => true);
+            return [...found]
+                .map(([file, st]) => ({
+                    file,
+                    dir: path.relative(config.renameFolder, path.dirname(file)),
+                    name: path.basename(file),
+                    size: st.size,
+                    mtimeMs: st.mtimeMs,
+                }))
+                .sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
+        })();
+        videoList = { at: Date.now(), promise };
+    }
+    return videoList.promise;
+}
+
+// Videos whose path in the rename folder has every word of query
+async function findVideos(query) {
+    const exists = await fsp.stat(config.renameFolder).then((st) => st.isDirectory(), () => false);
+    const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+    const matches = (exists ? await listVideos() : [])
+        .filter((v) => words.every((word) => path.join(v.dir, v.name).toLowerCase().includes(word)));
+    return { folder: config.renameFolder, exists, total: matches.length, videos: matches.slice(0, VIDEOS_MAX) };
+}
+
+// Is it (inside [...]) segments for filename-segments?
+const isSegmentsBlock = async (content) => (await getNameSegments(`[${content}].mp4`)) != null;
+
+// Name of a video with block (e.g. "[10-20]") before its extension. A segments
+//  block already in the name (at the start, or before the extension) is
+//  replaced, other brackets are kept
+async function nameWithSegments(name, block) {
+    const ext = path.extname(name);
+    let stem = name.slice(0, name.length - ext.length);
+    const start = /^\[([^\]]*)\]\s*/.exec(stem);
+    if (start && await isSegmentsBlock(start[1])) stem = stem.slice(start[0].length);
+    const end = /\s*\[([^[\]]*)\]$/.exec(stem);
+    if (end && await isSegmentsBlock(end[1])) stem = stem.slice(0, end.index);
+    return `${stem}${block}${ext}`;
+}
+
+// Why the file can't be renamed from the status page, undefined if it can: a
+//  video file in the rename folder, not hidden, not being trimmed
+async function renameSourceError(file) {
+    const folder = config.renameFolder;
+    const outside = `Only videos in ${folder} can be renamed here`;
+    if (typeof file !== 'string' || !path.isAbsolute(file) || path.resolve(file) !== file
+        || !file.startsWith(`${folder}/`)) return outside;
+    if (path.relative(folder, file).split(path.sep).some(isExcludedName)) return 'Hidden files can\'t be renamed here';
+    if (!isVideoFile(file)) return 'Not a video';
+    const st = await fsp.lstat(file).catch(() => undefined);
+    if (!st) return 'It\'s not there any more (renamed or moved meanwhile?)';
+    if (!st.isFile()) return 'Not a video file';
+    // Nor through a symbolic link to a folder elsewhere
+    const [realDir, realFolder] = await Promise.all([path.dirname(file), folder].map((p) => fsp.realpath(p).catch(() => '')));
+    if (!realFolder || (realDir !== realFolder && !realDir.startsWith(`${realFolder}/`))) return outside;
+    if (current?.file === file) return 'It\'s being trimmed right now, try again once it\'s done';
+    return undefined;
+}
+
+// Rename a video: block added before its extension, never over another file.
+//  dryRun: only says what the new name would be. { code, body }
+async function renameVideo({ file, block, dryRun }) {
+    const error = (code, message) => ({ code, body: { error: message } });
+    const sourceError = await renameSourceError(file);
+    if (sourceError) return error(400, sourceError);
+    const segmentsBlock = typeof block === 'string' ? block.trim() : '';
+    // Nothing that a file name can't (or shouldn't) have, e.g. line breaks
+    // eslint-disable-next-line no-control-regex
+    const wanted = /^\[[^[\]/\\\x00-\x1f\x7f]*\]$/.test(segmentsBlock) ? await getNameSegments(`${segmentsBlock}.mp4`) : undefined;
+    if (!wanted) return error(400, 'The [...] isn\'t valid');
+    const name = path.basename(file);
+    const newName = await nameWithSegments(name, segmentsBlock);
+    if (newName === name) return error(400, 'It already has that name');
+    if (Buffer.byteLength(newName) > 255) return error(400, 'The new name is too long');
+    // Auto-trim must find these segments in it
+    if (JSON.stringify(await getNameSegments(newName)) !== JSON.stringify(wanted)) {
+        return error(400, `"${newName}" wouldn't have these segments`);
+    }
+    const target = path.join(path.dirname(file), newName);
+    if (await exists(target)) return error(409, `There's already a file named "${newName}" there`);
+    if (!dryRun) {
+        try {
+            await fsp.rename(file, target);
+        } catch (err) {
+            return error(500, ['EACCES', 'EPERM'].includes(err.code) ? 'No permission to rename it' : `Can't rename it: ${err.message}`);
+        }
+        log(`renamed ${file} -> ${target}`);
+        videoList = undefined;
+        scheduleScan(2000);
+    }
+    return { code: 200, body: { file: target, name: newName, renamed: !dryRun, enabled: state.enabled } };
+}
+
+//
 // HTTP API
 //
 
-function status() {
+// allRecent: all the last results, else only the last few
+function status({ allRecent = false } = {}) {
     const failed = Object.entries(state.failed).map(([file, f]) => ({ file, error: f.error }));
     return {
         enabled: state.enabled,
@@ -970,7 +1089,8 @@ function status() {
         waiting: [...postponed].map(([file, { until, reason }]) => ({
             file, name: path.basename(file), reason, until: new Date(until).toISOString(),
         })),
-        recent: state.recent.map((r) => ({ ...r, name: path.basename(r.file), outputName: r.output && path.basename(r.output) })),
+        recent: (allRecent ? state.recent : state.recent.slice(0, RECENT_SHORT))
+            .map((r) => ({ ...r, name: path.basename(r.file), outputName: r.output && path.basename(r.output) })),
         failed,
     };
 }
@@ -992,8 +1112,11 @@ async function handle(req, res) {
         res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(body));
     };
-    const route = `${req.method} ${new URL(req.url, 'http://localhost').pathname.replace(/\/+$/, '')}`;
-    if (route === 'GET /status') return send(200, status());
+    const url = new URL(req.url, 'http://localhost');
+    const route = `${req.method} ${url.pathname.replace(/\/+$/, '')}`;
+    const sendStatus = () => send(200, status({ allRecent: url.searchParams.get('recent') === 'all' }));
+    if (route === 'GET /status') return sendStatus();
+    if (route === 'GET /videos') return send(200, await findVideos(url.searchParams.get('q')));
     if (route === 'GET ') {
         // Status page (nginx: /autotrim/)
         const html = await fsp.readFile(config.page);
@@ -1012,17 +1135,21 @@ async function handle(req, res) {
         if (route === 'POST /enabled') {
             if (typeof body.enabled !== 'boolean') return send(400, { error: '"enabled" must be true or false' });
             await setEnabled(body.enabled);
-            return send(200, status());
+            return sendStatus();
         }
         if (route === 'POST /scan') {
             scheduleScan(0);
-            return send(200, status());
+            return sendStatus();
         }
         if (route === 'POST /retry') {
             state.failed = {};
             await saveState();
             scheduleScan(0);
-            return send(200, status());
+            return sendStatus();
+        }
+        if (route === 'POST /rename') {
+            const { code, body: result } = await renameVideo(body);
+            return send(code, result);
         }
     }
     return send(404, { error: 'not found' });
@@ -1061,6 +1188,7 @@ module.exports = {
     isBeingEdited,
     estimateSecondsLeft,
     getMetadataArgs,
+    nameWithSegments,
     getOutFormat,
     shouldCopyStream,
     getCutArgs,

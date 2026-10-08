@@ -3,13 +3,17 @@
 //  status box and the badge are shown).
 //
 // Usage: node ui-check.cjs URL OUT_DIR SWITCH(on|off) RECENT_TEXT WAITING_TEXT
+//                           [PICK_TEXT PICK_FILE BLOCK NEW_NAME]
 //  - status box over LosslessCut: shows WAITING_TEXT    (08-status-box.png)
 //  - badge on the side panel's tab: a click opens the panel on the Auto-trim
 //    section, which shows SWITCH, RECENT_TEXT and WAITING_TEXT (07-side-panel.png)
-//  - status page URL/autotrim (redirected to autotrim/): WAITING_TEXT
-//    (09-status-page.png), and its scratch pad: pasted line breaks removed,
-//    "[]" back with the cursor inside when emptied or cleared, check, copy
-//    (10-scratch-pad.png)
+//  - status page URL/autotrim (redirected to autotrim/): WAITING_TEXT, results
+//    paged by 10 (09-status-page.png), its video renaming field: pasted line
+//    breaks removed, "[]" back with the cursor inside when emptied or
+//    cleared, check, copy, and with PICK_TEXT...: PICK_TEXT typed in the video
+//    picker finds only PICK_FILE, picked with the keyboard, "[BLOCK]" written,
+//    NEW_NAME previewed, renamed after confirming (10-video-renaming.png,
+//    11-rename-dialog.png). Its dark mode switch (12-status-page-dark.png)
 //
 // Needs playwright-core (or playwright) and Chrome/Chromium (CHROME_PATH, or
 //  the browsers installed for Playwright).
@@ -25,7 +29,7 @@ try {
     playwright = require('playwright');
 }
 
-const [url, outDir, expectedSwitch, recentText, waitingText] = process.argv.slice(2);
+const [url, outDir, expectedSwitch, recentText, waitingText, pickText, pickFile, block, newName] = process.argv.slice(2);
 const forceOpen = process.env.UI_CHECK_FORCE_OPEN === '1';
 
 function check(condition, message) {
@@ -35,7 +39,7 @@ function check(condition, message) {
 (async () => {
     const browser = await playwright.chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
     try {
-        // Clipboard: for the Copy button of the scratch pad
+        // Clipboard: for the Copy button of the video renaming field
         const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, permissions: ['clipboard-read', 'clipboard-write'] });
         const page = await context.newPage();
         const errors = [];
@@ -100,7 +104,16 @@ function check(condition, message) {
         console.log(`  status page: ${(await statusPage.textContent('#autotrim_page')).replace(/\s+/g, ' ').trim().slice(0, 300)}`);
         await statusPage.screenshot({ path: `${outDir}/09-status-page.png`, fullPage: true });
 
-        // Scratch pad of the status page: ready on load, "[]" with the cursor inside
+        // Results: 10 per page
+        const results = await statusPage.evaluate(async () => (await (await fetch('status?recent=all')).json()).recent.length);
+        const pager = await statusPage.$eval('#autotrim_recent_pager', (p) => (p.classList.contains('d-none') ? '' : p.textContent));
+        console.log(`  results: ${results}, pages: ${pager || 'one'}`);
+        check(results > 10 ? pager.includes(`1–10 of ${results}`) : pager === '', `results pager: "${pager}" for ${results} results`);
+
+        // Video renaming: the video picker has the focus on load, the field is
+        //  "[]" with the cursor inside when focused
+        check(await statusPage.evaluate(() => document.activeElement.id) === 'autotrim_video', 'the video picker has no focus on load');
+        await statusPage.focus('#autotrim_scratch');
         const scratch = () => statusPage.$eval('#autotrim_scratch', (f) => ({
             value: f.value, caret: f.selectionStart, focused: document.activeElement === f,
         }));
@@ -110,8 +123,9 @@ function check(condition, message) {
             data.setData('text/plain', t);
             f.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
         }, text);
+        await statusPage.waitForTimeout(100);
         let s = await scratch();
-        check(s.value === '[]' && s.caret === 1 && s.focused, `scratch pad on load: ${JSON.stringify(s)}`);
+        check(s.value === '[]' && s.caret === 1 && s.focused, `video renaming field when focused: ${JSON.stringify(s)}`);
         // Times copied from mpv, with their line break
         await paste('968.968000 \r\n');
         await statusPage.keyboard.type('-');
@@ -136,7 +150,64 @@ function check(condition, message) {
         await statusPage.waitForFunction(() => document.getElementById('autotrim_scratch_copy').textContent === 'Copied', null, { timeout: 5000 });
         const clipboard = await statusPage.evaluate(() => navigator.clipboard.readText());
         check(clipboard === '[0-end]', `copied: ${JSON.stringify(clipboard)}`);
-        await statusPage.locator('#autotrim_scratch_card').screenshot({ path: `${outDir}/10-scratch-pad.png` });
+
+        // Pick a video, write the [...], rename it
+        if (pickText) {
+            await statusPage.click('#autotrim_scratch_clear');
+            await statusPage.click('#autotrim_video');
+            await statusPage.keyboard.type(pickText);
+            await statusPage.waitForFunction((file) => {
+                const options = document.querySelectorAll('#autotrim_video_list [role="option"]');
+                return options.length === 1 && options[0].title === file;
+            }, pickFile, { timeout: 10000 });
+            await statusPage.keyboard.press('Enter');
+            const picked = await statusPage.evaluate(() => ({
+                info: document.getElementById('autotrim_video_info').textContent, focused: document.activeElement.id,
+            }));
+            console.log(`  picked: ${picked.info}`);
+            check(picked.info.startsWith(`${pickFile} · `) && picked.focused === 'autotrim_scratch', `picked: ${JSON.stringify(picked)}`);
+            await statusPage.keyboard.type(block);
+            await statusPage.waitForFunction((name) => !document.getElementById('autotrim_rename').disabled
+                && document.getElementById('autotrim_rename_preview').textContent === `New name: ${name}`, newName, { timeout: 10000 });
+            const cards = await Promise.all(['#autotrim_video_card', '#autotrim_scratch_card'].map((id) => statusPage.locator(id).boundingBox()));
+            await statusPage.screenshot({
+                path: `${outDir}/10-video-renaming.png`,
+                clip: { x: cards[0].x, y: cards[0].y, width: cards[0].width, height: cards[1].y + cards[1].height - cards[0].y },
+            });
+            await statusPage.click('#autotrim_rename');
+            await statusPage.waitForSelector('#autotrim_rename_dialog[open]');
+            const dialog = await statusPage.evaluate(() => ({
+                from: document.getElementById('autotrim_rename_from').textContent, to: document.getElementById('autotrim_rename_to').textContent,
+            }));
+            check(dialog.from === pickFile && dialog.to === newName, `rename dialog: ${JSON.stringify(dialog)}`);
+            await statusPage.screenshot({ path: `${outDir}/11-rename-dialog.png` });
+            await statusPage.click('#autotrim_rename_confirm');
+            await statusPage.waitForFunction(() => !document.getElementById('autotrim_rename_dialog').open
+                && document.getElementById('autotrim_rename_result').textContent.startsWith('✓ Renamed to'), null, { timeout: 10000 });
+            const after = await statusPage.evaluate(() => ({
+                result: document.getElementById('autotrim_rename_result').textContent,
+                picker: document.getElementById('autotrim_video').value,
+                field: document.getElementById('autotrim_scratch').value,
+                focused: document.activeElement.id,
+            }));
+            console.log(`  ${after.result}`);
+            check(after.result === `✓ Renamed to ${newName}` && after.picker === '' && after.field === '[]' && after.focused === 'autotrim_video',
+                `after renaming: ${JSON.stringify(after)}`);
+        }
+
+        // Dark mode switch, remembered
+        const theme = () => statusPage.evaluate(() => document.documentElement.getAttribute('data-bs-theme'));
+        const initialTheme = await theme();
+        await statusPage.click('#autotrim_theme');
+        const switched = await theme();
+        check(switched !== initialTheme, `theme still ${switched} after the switch`);
+        await statusPage.reload();
+        await statusPage.waitForSelector('#autotrim_theme');
+        check(await theme() === switched, 'the theme is not remembered after a reload');
+        if (switched !== 'dark') await statusPage.click('#autotrim_theme');
+        check(await theme() === 'dark', 'no dark mode');
+        await statusPage.screenshot({ path: `${outDir}/12-status-page-dark.png`, fullPage: true });
+        console.log(`  theme: ${initialTheme}, switched to ${switched}, remembered`);
 
         if (errors.length > 0) console.log(`  page errors: ${errors.join(' | ')}`);
     } finally {

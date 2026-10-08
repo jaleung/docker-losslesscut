@@ -12,7 +12,8 @@
 #  overwriting, keeping the originals' modified date, permissions and tags,
 #  sources in the trash, a video being edited in LosslessCut left waiting, and
 #  its views in a browser (status box, side panel tab badge, side panel,
-#  status page and its scratch pad).
+#  status page with its video renaming, dark mode and paged results), and a
+#  video renamed on the status page trimmed in turn.
 #  Then, in a second container with the image defaults (HTTPS and
 #  WEB_NOTIFICATION), check that the "Export finished" notification is sent.
 #
@@ -473,9 +474,17 @@ if grep -q ' failed ' <<< "$autotrim_logs"; then fail "a background trim failed"
 if command -v node >/dev/null \
     && node -e "try { require.resolve('playwright-core') } catch { require.resolve('playwright') }" 2>/dev/null; then
     log "Checking the auto-trim views in a browser"
-    # While '[0-3]edited.mp4' waits: status box, badge, side panel, status page
+    # While '[0-3]edited.mp4' waits: status box, badge, side panel, status page.
+    #  On the status page, 'AUTO TWO-trimmed.mp4' is renamed with [2-5]
     node "$(dirname "$0")/ui-check.cjs" "http://127.0.0.1:$WEB_PORT/" "$OUT_DIR" on 'AUTO ONE-trimmed.mp4' '[0-3]edited.mp4' \
+        'two-trimmed.mp4' '/medias/auto/AUTO TWO-trimmed.mp4' '2-5' 'AUTO TWO-trimmed[2-5].mp4' \
         || fail "the auto-trim views don't work"
+    log "Checking that the video renamed on the status page is trimmed"
+    wait_for_file '/medias/auto/AUTO TWO-TRIMMED-trimmed.mp4' 90 || fail "the renamed 'AUTO TWO-trimmed[2-5].mp4' wasn't trimmed"
+    duration="$(media_duration '/medias/auto/AUTO TWO-TRIMMED-trimmed.mp4')" || fail "trimmed file looks broken"
+    echo "  trimmed: /medias/auto/AUTO TWO-TRIMMED-trimmed.mp4 (${duration}s)"
+    between "$duration" 2.5 4.5 || fail "unexpected duration ${duration}s (expected 2.5-4.5 s)"
+    check_trashed '/medias/auto/AUTO TWO-trimmed[2-5].mp4'
 else
     log "Auto-trim views not checked in a browser (needs node and playwright-core)"
 fi
