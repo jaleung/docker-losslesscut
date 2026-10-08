@@ -39,6 +39,7 @@ The swiss army knife of lossless video/audio editing
       * [Finding Files in Large Folders](#finding-files-in-large-folders)
       * [Segments from File Names](#segments-from-file-names)
       * [Export Defaults](#export-defaults)
+      * [Background Trimming (Auto-trim)](#background-trimming-auto-trim)
       * [Hardware Acceleration](#hardware-acceleration)
       * [Audio playback](#audio-playback)
       * [Low Resource Hosts](#low-resource-hosts)
@@ -104,6 +105,8 @@ If the application fails to start with an error about `/dev/dri`, your NAS has n
 
 **Exporting**: the exported file is named e.g. `NEW VIDEO-trimmed.mp4`, and the original video and its project file are then moved to the trash automatically, see [Export Defaults](#export-defaults). The trash is the hidden `.Trash-<USER_ID>` folder at the top of the share, e.g. `/share/Multimedia/.Trash-500`: enable *Show hidden files* in File Station's settings to see it, and empty it from there.
 
+**Trimming in the background**: switch on *Auto-trim* in the side panel to have videos with segments in their name trimmed automatically, one at a time, without opening them, see [Background Trimming](#background-trimming-auto-trim).
+
 **Notification when an export is done**: like the desktop app, LosslessCut can tell you when an export (or a merge) is finished or has failed, with the usual notification sound of your computer. It's enabled by default (`WEB_NOTIFICATION=1`, which needs `SECURE_CONNECTION=1`, also the default). The browser asks for permission on your first click in the page: choose *Allow*. The page has to stay open, it can be in a background tab. On Windows, the sound follows *Settings → System → Notifications → Google Chrome/Microsoft Edge → Play a sound*. In LosslessCut, *Settings → Prompts and dialogs → Show notifications* must stay enabled (the default).
 
 **Copy and paste**: to copy and paste directly between your computer and LosslessCut (e.g. timecodes), use Chrome or Edge, open the side panel (the tab on the left edge), and enable *Settings → Sync with Host Clipboard*; allow clipboard access when the browser asks. This needs HTTPS (`SECURE_CONNECTION=1`, the default): over plain `http://` the switch isn't shown. Firefox and Safari don't support it, use the *Clipboard* box of the side panel instead. To get rid of the certificate warning, copy a certificate for the NAS (e.g. from myQNAPcloud) to `certs/web-privkey.pem` and `certs/web-fullchain.pem` in the settings folder, see [Certificates](#certificates).
@@ -151,6 +154,8 @@ Variables specific to this image:
 |`LOSSLESSCUT_DEFAULT_SETTINGS`| When set to `1`, the [export defaults](#export-defaults) of this image (output file name, cleanup after export) are applied to the LosslessCut settings you haven't changed yourself. Set to `0` to keep LosslessCut's own defaults. | `1` |
 |`LOSSLESSCUT_FILENAME_SEGMENTS`| When set to `1`, videos with segments in their name get a project file, see [Segments from File Names](#segments-from-file-names). Set to `0` to disable. | `1` |
 |`LOSSLESSCUT_FILENAME_SEGMENTS_PATHS`| Folders where videos with segments in their name are looked for (with their subfolders): `auto` for every folder mapped into the container except `/config`, or a comma-separated list, e.g. `/storage/To cut`. | `auto` |
+|`LOSSLESSCUT_AUTOTRIM`| When set to `1`, videos with segments in their name can be trimmed in the background: switched on and off in the side panel of the web page, off until switched on. Set to `0` to remove the feature. See [Background Trimming](#background-trimming-auto-trim). | `1` |
+|`LOSSLESSCUT_AUTOTRIM_INTERVAL`| Seconds between two checks of the folders for videos to trim, while background trimming is switched on. | `60` |
 |`LOSSLESSCUT_ARGS`| Additional [command line arguments](https://github.com/mifi/lossless-cut/blob/master/docs/cli.md) for LosslessCut, e.g. `--http-api` or files to open. | `""` |
 
 Common variables, provided by the [base image](https://github.com/jlesage/docker-baseimage-gui#environment-variables) (which has more):
@@ -251,6 +256,19 @@ The image changes some of LosslessCut's default settings:
 * When several segments are exported as separate files (without merging), the template gives them all the same name, so LosslessCut uses its own template for them, which adds the segment number.
 * The trash: files are moved to the hidden `.Trash-<USER_ID>` folder at the top of the mapped folder they're in, e.g. `/share/Multimedia/.Trash-500` on a QNAP NAS for a share mapped to `/storage` or `/medias`. It isn't emptied automatically. To restore a file, move it back from the `files` folder in there.
 * If the output file already exists, LosslessCut overwrites it without asking (its *Overwrite existing files* setting, on by default). Videos whose names only differ in their `[...]` part, e.g. `Clip[1-2].mp4` and `Clip[5-9].mp4`, both export to `CLIP-trimmed.mp4`: move or rename the first export before exporting the second one. Turning that setting off doesn't help here: LosslessCut then skips the existing file, still treats the export as done, and the cleanup runs.
+
+### Background Trimming (Auto-trim)
+
+Videos with segments in their name can also be trimmed without opening them in LosslessCut: switch on **Auto-trim** in the side panel of the web page (the tab on the left edge).
+
+* While it's on, the folders mapped into the container are checked every minute for videos named like in [Segments from File Names](#segments-from-file-names). A video is picked up once it hasn't changed for 30 seconds, so files still being copied are left alone.
+* Videos are trimmed **one at a time**, oldest first, the others wait in a queue. Trimming only copies data (no re-encoding), with the lowest CPU and disk priority, so other services of the NAS come first.
+* The result is the same as *Export + merge* in LosslessCut (keyframe cut): the output is named after LosslessCut's file name template, e.g. `NEW VIDEO-trimmed.mp4` with the [export defaults](#export-defaults), and the source and its project file are cleaned up as LosslessCut's *Cleanup after export* setting says (moved to the trash with the defaults). An existing file is never overwritten: ` (2)` is added to the name instead.
+* If you changed a video's segments in LosslessCut, your segments are used rather than the ones in the name. A video that's open in LosslessCut is normally skipped until it's closed.
+* The side panel shows the video being trimmed with its progress, the waiting ones and the last results. A video that fails (e.g. a damaged file) isn't tried again until it changes or you click *Retry failed*. With `WEB_NOTIFICATION`, the browser also shows a notification for each video.
+* Switching it off stops the current trim (its source is kept, and trimmed when switched on again) and the checks: nothing runs in the background while it's off. The switch is remembered across restarts and image updates.
+
+`LOSSLESSCUT_AUTOTRIM=0` removes the feature and its section of the side panel, `LOSSLESSCUT_AUTOTRIM_INTERVAL` changes how often the folders are checked, and `LOSSLESSCUT_FILENAME_SEGMENTS_PATHS` which folders (see [Environment Variables](#environment-variables)). The container log shows what's done (`[autotrim]` lines).
 
 ### Hardware Acceleration
 
@@ -439,12 +457,12 @@ creation (e.g. `losslesscut`).
 
 ```shell
 make          # build for the current architecture
-make unit-test  # test the scripts of the image (segments from file names, default settings, trash), no Docker needed
+make unit-test  # test the scripts of the image (segments from file names, default settings, trash, background trimming), no Docker needed
 make test     # the script tests, then smoke test the image built by "make" (needs Docker, and vncdotool for screenshots)
 make buildx   # build for amd64, arm64 and armv7
 ```
 
-The smoke test ([`helper-scripts/smoke-test.sh`](helper-scripts/smoke-test.sh)) starts the image with 3 CPUs and 2GB of memory, waits for it to be healthy, checks libraries, flags, user and priority of LosslessCut, then opens generated videos and exports them through LosslessCut's HTTP API: project files from file names, export defaults (output names, cleanup to the trash), file dialog search, and notifications with the image's defaults (HTTPS). Logs and screenshots are written to `smoke-test-output/`.
+The smoke test ([`helper-scripts/smoke-test.sh`](helper-scripts/smoke-test.sh)) starts the image with 3 CPUs and 2GB of memory, waits for it to be healthy, checks libraries, flags, user and priority of LosslessCut, then opens generated videos and exports them through LosslessCut's HTTP API: project files from file names, export defaults (output names, cleanup to the trash), file dialog search, background trimming (queue, name clashes, trash, one at a time), and notifications with the image's defaults (HTTPS). With `node` and `playwright-core` (`NODE_PATH`, and Chrome in `CHROME_PATH`), it also checks the side panel in a browser ([`helper-scripts/ui-check.cjs`](helper-scripts/ui-check.cjs)). Logs and screenshots are written to `smoke-test-output/`.
 
 The build itself fails if a library needed by LosslessCut or FFmpeg is missing, on every architecture.
 
