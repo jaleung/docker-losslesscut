@@ -588,6 +588,12 @@
         });
     }
 
+    // A card's title, with an option on its right
+    function cardHeader(title, option) {
+        return el('div', { class: 'd-flex flex-wrap align-items-center justify-content-between column-gap-3 row-gap-1 mb-2' },
+            el('h2', { class: 'h6 card-title mb-0', text: title }), option);
+    }
+
     function addPageStyle() {
         document.head.append(el('style', { id: 'autotrim_page_style' }, `
             .autotrim-picker { position: relative; }
@@ -795,11 +801,11 @@
 
         return {
             element: el('section', { class: 'card mb-3', id: 'autotrim_video_card' }, el('div', { class: 'card-body' },
-                el('h2', { class: 'h6 card-title', text: 'Video file' }),
+                // The switch above the field: the list opens under it
+                cardHeader('Video file', el('div', { class: 'form-check form-switch mb-0' }, subfolders,
+                    el('label', { class: 'form-check-label small', for: 'autotrim_video_subfolders', text: 'Include subfolders' }))),
                 el('div', { class: 'autotrim-picker' }, field, list),
-                info,
-                el('div', { class: 'form-check form-switch mt-1 mb-0' }, subfolders,
-                    el('label', { class: 'form-check-label small', for: 'autotrim_video_subfolders', text: 'Include subfolders' })))),
+                info)),
             selected: () => selected,
             clear() {
                 selected = null;
@@ -1054,11 +1060,10 @@
 
         return {
             element: el('section', { class: 'card mb-3', id: 'autotrim_scratch_card' }, el('div', { class: 'card-body' },
-                el('h2', { class: 'h6 card-title', text: 'Video renaming' }),
+                cardHeader('Video renaming', el('div', { class: 'form-check form-switch mb-0' }, noConfirm,
+                    el('label', { class: 'form-check-label small', for: 'autotrim_rename_noconfirm', text: 'Rename without confirmation' }))),
                 el('div', { class: 'input-group' }, field, copy, clear, rename),
-                check, preview, done,
-                el('div', { class: 'form-check form-switch mt-1 mb-0' }, noConfirm,
-                    el('label', { class: 'form-check-label small', for: 'autotrim_rename_noconfirm', text: 'Rename without confirmation' })))),
+                check, preview, done)),
             // A video picked (or none)
             picked(video) {
                 if (video) {
