@@ -27,7 +27,8 @@
 //   GET /status (?recent=all: all the last results, else the last 5),
 //   POST /enabled {"enabled": true|false}, POST /scan, POST /retry (failed
 //   videos are tried again), GET / for the status page, and for its video
-//   renaming: GET /videos?q=WORDS (videos in /medias) and
+//   renaming: GET /videos?q=WORDS[&subfolders=1] (videos in /medias, also
+//   in its subfolders with subfolders=1) and
 //   POST /rename {"file", "block", "dryRun"} (adds "[...]" to a video's name)
 
 'use strict';
@@ -673,9 +674,9 @@ async function getFolders() {
 
 const hasBrackets = (name) => /\[.*\]/.test(name);
 
-// Videos under dir (by default those with brackets in their name), and
-//  leftover temp files
-async function walk(dir, found, leftovers, wanted = hasBrackets) {
+// Videos under dir (by default those with brackets in their name, and in its
+//  subfolders too), and leftover temp files
+async function walk(dir, found, leftovers, { wanted = hasBrackets, recursive = true } = {}) {
     let entries;
     try {
         entries = await fsp.readdir(dir, { withFileTypes: true });
@@ -690,7 +691,7 @@ async function walk(dir, found, leftovers, wanted = hasBrackets) {
             // skipped
         } else if (entry.isDirectory()) {
             // eslint-disable-next-line no-await-in-loop
-            await walk(file, found, leftovers, wanted);
+            if (recursive) await walk(file, found, leftovers, { wanted, recursive });
         } else if (entry.isFile() && wanted(entry.name) && isVideoFile(entry.name)) {
             // eslint-disable-next-line no-await-in-loop
             const st = await fsp.stat(file).catch(() => undefined);
@@ -963,14 +964,17 @@ async function setEnabled(enabled) {
 // Renaming, from the status page
 //
 
-let videoList; // { at, promise }: the videos in config.renameFolder
+// The videos in config.renameFolder: subfolders (true|false) -> { at, promise }
+const videoLists = new Map();
 
-// Videos in the rename folder, newest first (listed again after a while)
-function listVideos() {
-    if (!videoList || Date.now() - videoList.at > VIDEOS_CACHE_MS) {
+// Videos in the rename folder (and its subfolders), newest first (listed
+//  again after a while)
+function listVideos(subfolders) {
+    const listed = videoLists.get(subfolders);
+    if (!listed || Date.now() - listed.at > VIDEOS_CACHE_MS) {
         const promise = (async () => {
             const found = new Map();
-            await walk(config.renameFolder, found, [], () => true);
+            await walk(config.renameFolder, found, [], { wanted: () => true, recursive: subfolders });
             return [...found]
                 .map(([file, st]) => ({
                     file,
@@ -981,18 +985,19 @@ function listVideos() {
                 }))
                 .sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
         })();
-        videoList = { at: Date.now(), promise };
+        videoLists.set(subfolders, { at: Date.now(), promise });
+        return promise;
     }
-    return videoList.promise;
+    return listed.promise;
 }
 
 // Videos whose path in the rename folder has every word of query
-async function findVideos(query) {
+async function findVideos(query, subfolders = false) {
     const exists = await fsp.stat(config.renameFolder).then((st) => st.isDirectory(), () => false);
     const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
-    const matches = (exists ? await listVideos() : [])
+    const matches = (exists ? await listVideos(subfolders) : [])
         .filter((v) => words.every((word) => path.join(v.dir, v.name).toLowerCase().includes(word)));
-    return { folder: config.renameFolder, exists, total: matches.length, videos: matches.slice(0, VIDEOS_MAX) };
+    return { folder: config.renameFolder, exists, subfolders, total: matches.length, videos: matches.slice(0, VIDEOS_MAX) };
 }
 
 // Is it (inside [...]) segments for filename-segments?
@@ -1058,7 +1063,7 @@ async function renameVideo({ file, block, dryRun }) {
             return error(500, ['EACCES', 'EPERM'].includes(err.code) ? 'No permission to rename it' : `Can't rename it: ${err.message}`);
         }
         log(`renamed ${file} -> ${target}`);
-        videoList = undefined;
+        videoLists.clear();
         scheduleScan(2000);
     }
     return { code: 200, body: { file: target, name: newName, renamed: !dryRun, enabled: state.enabled } };
@@ -1116,7 +1121,9 @@ async function handle(req, res) {
     const route = `${req.method} ${url.pathname.replace(/\/+$/, '')}`;
     const sendStatus = () => send(200, status({ allRecent: url.searchParams.get('recent') === 'all' }));
     if (route === 'GET /status') return sendStatus();
-    if (route === 'GET /videos') return send(200, await findVideos(url.searchParams.get('q')));
+    if (route === 'GET /videos') {
+        return send(200, await findVideos(url.searchParams.get('q'), url.searchParams.get('subfolders') === '1'));
+    }
     if (route === 'GET ') {
         // Status page (nginx: /autotrim/)
         const html = await fsp.readFile(config.page);

@@ -3,7 +3,7 @@
 
 ARG app_version="3.69.0"
 # Bump if publishing a new image with the same app_version, reset to 1 with new app versions
-ARG image_revision="9"
+ARG image_revision="10"
 # Pinned for reproducible builds, see https://hub.docker.com/r/jlesage/baseimage-gui/tags
 ARG baseimage="jlesage/baseimage-gui:debian-13-v4.14.0"
 # BUILDPLATFORM and TARGETPLATFORM are defined when using BuildKit (i.e. docker buildx)

@@ -3,7 +3,7 @@
 //  status box and the badge are shown).
 //
 // Usage: node ui-check.cjs URL OUT_DIR SWITCH(on|off) RECENT_TEXT WAITING_TEXT
-//                           [PICK_TEXT PICK_FILE BLOCK NEW_NAME]
+//                           [PICK_TEXT PICK_FILE BLOCK NEW_NAME [PICK2_TEXT PICK2_FILE NEW_NAME2]]
 //  - status box over LosslessCut: shows WAITING_TEXT    (08-status-box.png)
 //  - badge on the side panel's tab: a click opens the panel on the Auto-trim
 //    section, which shows SWITCH, RECENT_TEXT and WAITING_TEXT (07-side-panel.png)
@@ -11,9 +11,13 @@
 //    paged by 10 (09-status-page.png), its video renaming field: pasted line
 //    breaks removed, "[]" back with the cursor inside when emptied or
 //    cleared, check, copy, and with PICK_TEXT...: PICK_TEXT typed in the video
-//    picker finds only PICK_FILE, picked with the keyboard, "[BLOCK]" written,
+//    picker finds nothing (PICK_FILE is in a subfolder of /medias), then only
+//    PICK_FILE with "Include subfolders" (remembered), picked with the
+//    keyboard, "[BLOCK]" written,
 //    NEW_NAME previewed, renamed after confirming (10-video-renaming.png,
-//    11-rename-dialog.png). Its dark mode switch (12-status-page-dark.png)
+//    11-rename-dialog.png); with PICK2_TEXT...: PICK2_FILE renamed to
+//    NEW_NAME2 right away with "Rename without confirmation" (remembered).
+//    Its dark mode switch (12-status-page-dark.png)
 //
 // Needs playwright-core (or playwright) and Chrome/Chromium (CHROME_PATH, or
 //  the browsers installed for Playwright).
@@ -29,7 +33,7 @@ try {
     playwright = require('playwright');
 }
 
-const [url, outDir, expectedSwitch, recentText, waitingText, pickText, pickFile, block, newName] = process.argv.slice(2);
+const [url, outDir, expectedSwitch, recentText, waitingText, pickText, pickFile, block, newName, pick2Text, pick2File, newName2] = process.argv.slice(2);
 const forceOpen = process.env.UI_CHECK_FORCE_OPEN === '1';
 
 function check(condition, message) {
@@ -156,6 +160,11 @@ function check(condition, message) {
             await statusPage.click('#autotrim_scratch_clear');
             await statusPage.click('#autotrim_video');
             await statusPage.keyboard.type(pickText);
+            // In a subfolder: only with "Include subfolders" (off by default)
+            await statusPage.waitForFunction(() => document.getElementById('autotrim_video_list').textContent.includes('No video matches'),
+                null, { timeout: 10000 });
+            check(!(await statusPage.isChecked('#autotrim_video_subfolders')), '"Include subfolders" is on by default');
+            await statusPage.click('#autotrim_video_subfolders');
             await statusPage.waitForFunction((file) => {
                 const options = document.querySelectorAll('#autotrim_video_list [role="option"]');
                 return options.length === 1 && options[0].title === file;
@@ -195,6 +204,28 @@ function check(condition, message) {
                 `after renaming: ${JSON.stringify(after)}`);
         }
 
+        // Rename without confirmation
+        if (pick2Text) {
+            check(!(await statusPage.isChecked('#autotrim_rename_noconfirm')), '"Rename without confirmation" is on by default');
+            await statusPage.click('#autotrim_rename_noconfirm');
+            await statusPage.click('#autotrim_video');
+            await statusPage.keyboard.type(pick2Text);
+            await statusPage.waitForFunction((file) => {
+                const options = document.querySelectorAll('#autotrim_video_list [role="option"]');
+                return options.length === 1 && options[0].title === file;
+            }, pick2File, { timeout: 10000 });
+            await statusPage.keyboard.press('Enter');
+            await statusPage.keyboard.type(block);
+            await statusPage.waitForFunction((name) => !document.getElementById('autotrim_rename').disabled
+                && document.getElementById('autotrim_rename_preview').textContent === `New name: ${name}`, newName2, { timeout: 10000 });
+            await statusPage.click('#autotrim_rename');
+            await statusPage.waitForFunction((name) => document.getElementById('autotrim_rename_result').textContent === `✓ Renamed to ${name}`,
+                newName2, { timeout: 10000 });
+            check(!(await statusPage.$eval('#autotrim_rename_dialog', (d) => d.open)), 'the dialog opened without confirmation');
+            check(await statusPage.$eval('#autotrim_video', (f) => f.value) === '', 'the picker is not cleared after renaming');
+            console.log(`  without confirmation: ✓ Renamed to ${newName2}`);
+        }
+
         // Dark mode switch, remembered
         const theme = () => statusPage.evaluate(() => document.documentElement.getAttribute('data-bs-theme'));
         const initialTheme = await theme();
@@ -204,6 +235,8 @@ function check(condition, message) {
         await statusPage.reload();
         await statusPage.waitForSelector('#autotrim_theme');
         check(await theme() === switched, 'the theme is not remembered after a reload');
+        if (pickText) check(await statusPage.isChecked('#autotrim_video_subfolders'), '"Include subfolders" is not remembered after a reload');
+        if (pick2Text) check(await statusPage.isChecked('#autotrim_rename_noconfirm'), '"Rename without confirmation" is not remembered after a reload');
         if (switched !== 'dark') await statusPage.click('#autotrim_theme');
         check(await theme() === 'dark', 'no dark mode');
         await statusPage.screenshot({ path: `${outDir}/12-status-page-dark.png`, fullPage: true });
