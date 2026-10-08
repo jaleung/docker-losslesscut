@@ -86,12 +86,12 @@
         ui.toggle.checked = s.enabled;
         const folders = (s.folders || []).join(', ');
         if (!s.enabled) {
-            ui.status.textContent = 'Off. When on, videos named like "[10-20,30-end]Name.mp4" are trimmed one at a time, and the source goes to the trash (like an export).';
-        } else if (s.current) {
-            ui.status.textContent = `On${folders ? `, watching ${folders}` : ''}.`;
+            ui.status.textContent = 'Off. When on, videos named like "[10-20,30-end]Name.mp4" are trimmed one at a time, '
+                + 'and cleaned up like after an export.';
         } else {
-            const checked = s.lastScan ? ` Last check ${time(s.lastScan)}.` : '';
-            ui.status.textContent = `On${folders ? `, watching ${folders}` : ''}. Nothing to trim.${checked}`;
+            const idle = !s.current && s.queue.length === 0 && (s.waiting || []).length === 0;
+            const checked = idle && s.lastScan ? ` Last check ${time(s.lastScan)}.` : '';
+            ui.status.textContent = `On${folders ? `, watching ${folders}` : ''}.${idle ? ' Nothing to trim.' : ''}${checked}`;
         }
 
         show(ui.current, Boolean(s.current));

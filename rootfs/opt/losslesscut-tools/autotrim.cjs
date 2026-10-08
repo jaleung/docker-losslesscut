@@ -868,6 +868,7 @@ async function setEnabled(enabled) {
         clearTimeout(scanTimer);
         queue = [];
         seen.clear();
+        postponed.clear();
         if (current) {
             cancelled = true;
             currentChild?.kill('SIGTERM');
