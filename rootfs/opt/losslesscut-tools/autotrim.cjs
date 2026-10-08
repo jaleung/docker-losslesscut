@@ -21,9 +21,11 @@
 // - The output name and the cleanup (source and project file moved to the
 //   trash) follow LosslessCut's settings, an existing file is never
 //   overwritten: " (2)" is added to the name
+// - The output keeps the source's modified time, permissions and tags (also
+//   when segments are merged), within LosslessCut's metadata settings
 // - HTTP API on a unix socket, reached through nginx at /autotrim/:
 //   GET /status, POST /enabled {"enabled": true|false}, POST /scan,
-//   POST /retry (failed videos are tried again)
+//   POST /retry (failed videos are tried again), and GET / for the status page
 
 'use strict';
 
@@ -55,6 +57,7 @@ const config = {
     notifySend: env.AUTOTRIM_NOTIFY_SEND || '/opt/base/bin/notify-send',
     gio: env.AUTOTRIM_GIO || 'gio',
     ionice: env.AUTOTRIM_IONICE || '/usr/bin/ionice',
+    page: env.AUTOTRIM_PAGE || path.join(__dirname, 'autotrim-page.html'),
 };
 
 // Same list as filename-segments
@@ -201,6 +204,13 @@ function isSettled({ previous, current, now, settleMs }) {
     return sameStat(previous, current) && now - current.mtimeMs >= settleMs;
 }
 
+// Seconds left for the current trim, from its progress so far. Undefined until
+//  there's enough to go by
+function estimateSecondsLeft({ progress, elapsedMs }) {
+    if (!(progress >= 0.02 && progress < 1) || !(elapsedMs >= 3000)) return undefined;
+    return Math.max(1, Math.round((elapsedMs / 1000) * ((1 - progress) / progress)));
+}
+
 // Is the video being worked on in LosslessCut? Its project file was saved by
 //  LosslessCut (not generated) less than quietMs ago
 function isBeingEdited({ projectText, projectMtimeMs, now, quietMs }) {
@@ -264,9 +274,30 @@ function getStreamCodecArgs({ stream, outputIndex, outFormat, needFlac }) {
 
 const formatNumber = (n) => String(Number(n.toFixed(6)));
 
+// Tags written by the muxer itself
+const MUXER_TAGS = new Set(['major_brand', 'minor_version', 'compatible_brands', 'encoder']);
+
+// -metadata arguments for the source's file-level tags (title, creation_time,
+//  comment, ...). Used when merging: the concat demuxer doesn't pass them on
+function getMetadataArgs(tags) {
+    return Object.entries(tags || {})
+        .filter(([key, value]) => !MUXER_TAGS.has(key.toLowerCase()) && value != null && String(value) !== '')
+        .flatMap(([key, value]) => ['-metadata', `${key}=${value}`]);
+}
+
+// LosslessCut's "preserveMetadata" setting: default, none, nonglobal
+function getPreserveMetadataArgs(preserveMetadata) {
+    if (preserveMetadata === 'none') return ['-map_metadata', '-1'];
+    if (preserveMetadata === 'nonglobal') return ['-map_metadata:g', '-1'];
+    return ['-map_metadata', '0'];
+}
+
+// LosslessCut's "preserveMovData" setting: all MP4/MOV tags
+const getMovFlags = (preserveMovData) => ['-movflags', preserveMovData ? '+use_metadata_tags+faststart' : '+faststart'];
+
 // ffmpeg arguments to copy one segment, like LosslessCut's lossless cut with
 //  "keyframe cut" (seeking before the input, -avoid_negative_ts make_zero)
-function getCutArgs({ input, output, start, end, duration, streams, outFormat }) {
+function getCutArgs({ input, output, start, end, duration, streams, outFormat, preserveMetadata = 'default', preserveMovData = false }) {
     const cuttingStart = start > 0;
     const cuttingEnd = !(duration > 0) || end < duration;
     const args = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats'];
@@ -278,8 +309,8 @@ function getCutArgs({ input, output, start, end, duration, streams, outFormat })
         args.push('-map', `0:${stream.index}`,
             ...getStreamCodecArgs({ stream, outputIndex, outFormat, needFlac: cuttingStart || cuttingEnd }));
     });
-    args.push('-map_metadata', '0', '-movflags', '+faststart', '-default_mode', 'infer_no_subs',
-        '-ignore_unknown', '-f', outFormat, '-y', output);
+    args.push(...getPreserveMetadataArgs(preserveMetadata), ...getMovFlags(preserveMovData),
+        '-default_mode', 'infer_no_subs', '-ignore_unknown', '-f', outFormat, '-y', output);
     return args;
 }
 
@@ -289,8 +320,9 @@ function getActiveDisposition(disposition) {
     return Object.keys(disposition).find((key) => disposition[key] === 1);
 }
 
-// ffmpeg arguments to merge the parts (concat demuxer, list on stdin)
-function getMergeArgs({ output, streams, outFormat }) {
+// ffmpeg arguments to merge the parts (concat demuxer, list on stdin), with
+//  the source's file-level tags (tags)
+function getMergeArgs({ output, streams, outFormat, tags, preserveMetadata = 'default', preserveMovData = false }) {
     const args = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats',
         '-f', 'concat', '-safe', '0', '-protocol_whitelist', 'file,pipe,fd', '-i', '-'];
     streams.filter(shouldCopyStream).forEach((stream, outputIndex) => {
@@ -298,7 +330,9 @@ function getMergeArgs({ output, streams, outFormat }) {
         const disposition = getActiveDisposition(stream.disposition);
         if (disposition != null) args.push(`-disposition:${outputIndex}`, disposition);
     });
-    args.push('-movflags', '+faststart', '-default_mode', 'infer_no_subs', '-ignore_unknown',
+    if (preserveMetadata === 'none') args.push('-map_metadata', '-1');
+    else if (preserveMetadata !== 'nonglobal') args.push(...getMetadataArgs(tags));
+    args.push(...getMovFlags(preserveMovData), '-default_mode', 'infer_no_subs', '-ignore_unknown',
         '-f', outFormat, '-y', output);
     return args;
 }
@@ -475,6 +509,12 @@ async function hasNameSegments(file) {
     return (await getNameSegments(file)) != null;
 }
 
+// Validity of a name doesn't change: parsed once per file
+async function hasNameSegmentsCached(file) {
+    if (!nameSegments.has(file)) nameSegments.set(file, await hasNameSegments(file));
+    return nameSegments.get(file);
+}
+
 const projectPath = (file) => {
     const { dir, name } = path.parse(file);
     return path.join(dir, `${name}-proj.llc`);
@@ -563,6 +603,8 @@ const state = {
 };
 const seen = new Map(); // file -> { size, mtimeMs } at the previous scan
 const postponed = new Map(); // file -> { until, reason }: wait until then
+const settling = new Map(); // file -> { mtimeMs }: segments name, copy not finished (or just found)
+const nameSegments = new Map(); // file -> whether its name has valid segments
 let queue = [];
 let current;
 let scanning = false;
@@ -679,6 +721,8 @@ async function scan() {
         }
         if (changed) await saveState();
         for (const file of seen.keys()) if (!found.has(file)) seen.delete(file);
+        for (const file of nameSegments.keys()) if (!found.has(file)) nameSegments.delete(file);
+        settling.clear();
         for (const [file, { until }] of postponed) if (!found.has(file) || until <= Date.now()) postponed.delete(file);
         queue = queue.filter((file) => found.has(file));
 
@@ -692,6 +736,8 @@ async function scan() {
             if (isSettled({ previous, current: st, now, settleMs: config.settleMs })) {
                 candidates.push([file, st]);
             } else {
+                // eslint-disable-next-line no-await-in-loop
+                if (await hasNameSegmentsCached(file)) settling.set(file, { mtimeMs: st.mtimeMs });
                 // Look again once it could be settled
                 nextScanMs = Math.min(nextScanMs, Math.max(config.settleMs - (now - st.mtimeMs), 2000));
             }
@@ -700,7 +746,15 @@ async function scan() {
         candidates.sort((a, b) => a[1].mtimeMs - b[1].mtimeMs || a[0].localeCompare(b[0]));
         for (const [file] of candidates) {
             // eslint-disable-next-line no-await-in-loop
-            if (await hasNameSegments(file)) {
+            if (await hasNameSegmentsCached(file)) {
+                // eslint-disable-next-line no-await-in-loop
+                const edited = await editedUntil(file);
+                if (edited != null) {
+                    // Listed as waiting right away (trimNext checks again)
+                    log(`waiting, edited in LosslessCut: ${file}`);
+                    postponed.set(file, { until: edited, reason: 'edited in LosslessCut' });
+                    continue;
+                }
                 queue.push(file);
                 log(`queued ${file}`);
             } else {
@@ -738,6 +792,10 @@ async function trim(file, onProgress) {
     if (segments.length === 0) throw new Error('No segment to keep');
 
     const losslessCutConfig = await readLosslessCutConfig();
+    const metadata = {
+        preserveMetadata: losslessCutConfig.preserveMetadata ?? 'default',
+        preserveMovData: losslessCutConfig.preserveMovData === true,
+    };
     const dir = path.dirname(file);
     const name = getOutputName({ losslessCutConfig, file, ext, segments, epochMs: Date.now() });
     const tempOutput = path.join(dir, `${TEMP_PREFIX}${process.pid}-out${ext}`);
@@ -756,14 +814,14 @@ async function trim(file, onProgress) {
             onProgress(doneSeconds / total, step);
             if (cancelled) throw new Error('cancelled');
             // eslint-disable-next-line no-await-in-loop
-            await run(config.ffmpeg, getCutArgs({ input: file, output: parts[n], ...segment, duration, streams, outFormat }),
+            await run(config.ffmpeg, getCutArgs({ input: file, output: parts[n], ...segment, duration, streams, outFormat, ...metadata }),
                 { onStdout: progress(step, doneSeconds), lowPriority: true });
             doneSeconds += segment.end - segment.start;
         }
         if (segments.length > 1) {
             onProgress(doneSeconds / total, 'Merging');
             if (cancelled) throw new Error('cancelled');
-            await run(config.ffmpeg, getMergeArgs({ output: tempOutput, streams, outFormat }),
+            await run(config.ffmpeg, getMergeArgs({ output: tempOutput, streams, outFormat, tags: probe.format?.tags, ...metadata }),
                 { input: getConcatList(parts), onStdout: progress('Merging', doneSeconds), lowPriority: true });
         }
         const st = await fsp.stat(tempOutput);
@@ -775,6 +833,14 @@ async function trim(file, onProgress) {
     } finally {
         await Promise.all([...parts, tempOutput].map((f) => fsp.unlink(f).catch(() => {})));
     }
+}
+
+// The output keeps the source's permissions and access/modified times
+async function keepFileAttributes(output, source) {
+    await fsp.chmod(output, source.mode & 0o7777)
+        .catch((err) => log(`WARNING: could not set the permissions of ${output}: ${err.message}`));
+    await fsp.utimes(output, source.atimeMs / 1000, source.mtimeMs / 1000)
+        .catch((err) => log(`WARNING: could not set the times of ${output}: ${err.message}`));
 }
 
 async function cleanup(file) {
@@ -795,8 +861,9 @@ async function cleanup(file) {
 }
 
 async function trimNext(file) {
-    const st = await fsp.stat(file).then(statKey, () => undefined);
-    if (!st) return;
+    const source = await fsp.stat(file).catch(() => undefined);
+    if (!source) return;
+    const st = statKey(source);
     const edited = await editedUntil(file);
     if (edited != null) {
         log(`waiting, edited in LosslessCut: ${file}`);
@@ -816,14 +883,15 @@ async function trimNext(file) {
         const { output, segments } = await trim(file, (progress, step) => {
             current = { ...current, progress, step };
         });
+        await keepFileAttributes(output, source);
         // An output name with [..] (custom template) mustn't be trimmed again
         const outputStat = /\[.*\]/.test(path.basename(output)) && await fsp.stat(output).then(statKey, () => undefined);
         if (outputStat) state.done[output] = { ...outputStat, output: true };
-        const source = await cleanup(file);
+        const cleaned = await cleanup(file);
         // Kept (or the trash failed): don't trim it again
         if (await exists(file)) state.done[file] = st;
         const secs = Math.round((Date.now() - started) / 1000);
-        log(`done ${file} -> ${output} (${segments.length} segment(s), ${secs}s, source: ${source ?? 'kept, trash failed'})`);
+        log(`done ${file} -> ${output} (${segments.length} segment(s), ${secs}s, source: ${cleaned ?? 'kept, trash failed'})`);
         addRecent({ file, output, ok: true, seconds: secs });
         notify('Trimmed in the background', path.basename(output));
     } catch (err) {
@@ -869,6 +937,7 @@ async function setEnabled(enabled) {
         queue = [];
         seen.clear();
         postponed.clear();
+        settling.clear();
         if (current) {
             cancelled = true;
             currentChild?.kill('SIGTERM');
@@ -888,8 +957,16 @@ function status() {
         folders,
         intervalSeconds: config.intervalMs / 1000,
         lastScan,
-        current: current && { ...current, name: path.basename(current.file) },
+        current: current && {
+            ...current,
+            name: path.basename(current.file),
+            secondsLeft: estimateSecondsLeft({ progress: current.progress, elapsedMs: Date.now() - Date.parse(current.startedAt) }),
+        },
         queue: queue.map((file) => ({ file, name: path.basename(file) })),
+        // Being copied (or just found): queued once they haven't changed for a while
+        pending: [...settling].map(([file, { mtimeMs }]) => ({
+            file, name: path.basename(file), reason: Date.now() - mtimeMs < config.settleMs ? 'copying' : 'checking',
+        })),
         waiting: [...postponed].map(([file, { until, reason }]) => ({
             file, name: path.basename(file), reason, until: new Date(until).toISOString(),
         })),
@@ -917,6 +994,12 @@ async function handle(req, res) {
     };
     const route = `${req.method} ${new URL(req.url, 'http://localhost').pathname.replace(/\/+$/, '')}`;
     if (route === 'GET /status') return send(200, status());
+    if (route === 'GET ') {
+        // Status page (nginx: /autotrim/)
+        const html = await fsp.readFile(config.page);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+        return res.end(html);
+    }
     if (req.method === 'POST') {
         // JSON only: a page from another site can't send it without CORS
         if (!String(req.headers['content-type']).startsWith('application/json')) return send(415, { error: 'JSON expected' });
@@ -976,6 +1059,8 @@ module.exports = {
     parseJson5,
     isSettled,
     isBeingEdited,
+    estimateSecondsLeft,
+    getMetadataArgs,
     getOutFormat,
     shouldCopyStream,
     getCutArgs,
