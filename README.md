@@ -276,7 +276,7 @@ To follow it, while LosslessCut is in use:
 * **Side panel**: the switch, the video being trimmed, the waiting ones and the last results. It refreshes as soon as it opens.
 * **Status page**: `https://<NAS IP>:5800/autotrim/` shows everything on one page: the switch, the progress, the whole queue with full paths (and, for a video edited in LosslessCut, the earliest time it can be trimmed), and the last 20 results. Handy in another tab or on a phone. *Open full list* in the status box and in the side panel leads there.
 
-`LOSSLESSCUT_AUTOTRIM=0` removes the feature and its section of the side panel, `LOSSLESSCUT_AUTOTRIM_INTERVAL` changes how often the folders are checked, and `LOSSLESSCUT_FILENAME_SEGMENTS_PATHS` which folders (see [Environment Variables](#environment-variables)). The container log shows what's done (`[autotrim]` lines).
+`LOSSLESSCUT_AUTOTRIM=0` removes the feature and all of the above from the web page, `LOSSLESSCUT_AUTOTRIM_INTERVAL` changes how often the folders are checked, and `LOSSLESSCUT_FILENAME_SEGMENTS_PATHS` which folders (see [Environment Variables](#environment-variables)). The container log shows what's done (`[autotrim]` lines).
 
 ### Hardware Acceleration
 
