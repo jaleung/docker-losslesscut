@@ -9,7 +9,10 @@
 #    moved to the trash of that folder
 #  Then background trimming (auto-trim): off by default, switched on through
 #  nginx like the side panel does, videos trimmed one at a time, never
-#  overwriting, sources in the trash, and the side panel in a browser.
+#  overwriting, keeping the originals' modified date, permissions and tags,
+#  sources in the trash, a video being edited in LosslessCut left waiting, and
+#  its views in a browser (status box, side panel tab badge, side panel,
+#  status page).
 #  Then, in a second container with the image defaults (HTTPS and
 #  WEB_NOTIFICATION), check that the "Export finished" notification is sent.
 #
@@ -21,9 +24,9 @@
 #   SMOKE_MEMORY  memory limit (2g)
 #   SMOKE_TIMEOUT seconds to wait for the container to become healthy (300)
 #
-# Screenshots are taken if vncdo (pip install vncdotool) is available. The side
-#  panel is checked if node and playwright-core (or playwright) are available,
-#  with Chrome from CHROME_PATH or Playwright's browsers.
+# Screenshots are taken if vncdo (pip install vncdotool) is available. The
+#  auto-trim views are checked if node and playwright-core (or playwright) are
+#  available, with Chrome from CHROME_PATH or Playwright's browsers.
 
 set -euo pipefail
 
@@ -242,12 +245,45 @@ docker run --rm -v "$VOLUME:/storage" --entrypoint sh "$IMAGE" -c "
         -t 20 -g 50 -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest -y $CLIP \
     && cp $CLIP '$SEGMENTS_CLIP' && cp $CLIP '/storage/smoke-invalid[5-2].mp4' && cp $CLIP $NOTIF_CLIP \
     && chown -R 1000:1000 /storage"
+# /medias: a video with segments at the front of its name, and in /medias/auto,
+#  videos for background trimming
+media_setup="$(cat <<'SETUP'
+set -e
+clip="$1"
+cp "$clip" "$2"
+mkdir /medias/auto
+# With tags, an old modified date and mode 664, to be kept in the trimmed videos
+for name in '[2-5,8-end]auto one.mp4' '[0-3]auto two.mp4'; do
+    LD_LIBRARY_PATH=/LosslessCut/resources /LosslessCut/resources/ffmpeg -hide_banner -loglevel error \
+        -i "$clip" -map 0 -c copy -metadata title='Smoke title' -metadata comment='Keep me' \
+        -metadata creation_time=2020-01-02T03:04:05Z -y "/medias/auto/$name"
+    touch -d '2020-01-02 03:04:05' "/medias/auto/$name"
+    chmod 664 "/medias/auto/$name"
+done
+# Name already taken: the trimmed video gets " (2)"
+cp "$clip" '/medias/auto/AUTO TWO-trimmed.mp4'
+# Being edited in LosslessCut: a project file saved by LosslessCut (without the
+#  generator's marker), there before the video so it's not generated
+cat > '/medias/auto/[0-3]edited-proj.llc' <<'LLC'
+{
+  version: 2,
+  mediaFileName: '[0-3]edited.mp4',
+  cutSegments: [
+    {
+      start: 0,
+      end: 1,
+      name: '',
+    },
+  ],
+}
+LLC
+cp "$clip" '/medias/auto/[0-3]edited.mp4'
+chown -R 1000:1000 /medias
+SETUP
+)"
 docker volume create "$MEDIA_VOLUME" >/dev/null
-docker run --rm -v "$VOLUME:/storage" -v "$MEDIA_VOLUME:/medias" --entrypoint sh "$IMAGE" -c "
-    cp $CLIP '$FRONT_CLIP' \
-    && mkdir /medias/auto && cp $CLIP '/medias/auto/[2-5,8-end]auto one.mp4' \
-    && cp $CLIP '/medias/auto/[0-3]auto two.mp4' && cp $CLIP '/medias/auto/AUTO TWO-trimmed.mp4' \
-    && chown -R 1000:1000 /medias"
+docker run --rm -v "$VOLUME:/storage" -v "$MEDIA_VOLUME:/medias" --entrypoint sh "$IMAGE" \
+    -c "$media_setup" sh "$CLIP" "$FRONT_CLIP"
 
 # LosslessCut settings as if the user had set them: no confirmation before
 #  exporting, export + merge. The image's defaults are added on top
@@ -370,6 +406,10 @@ log "Checking background trimming (auto-trim)"
 page="$(curl -fsS "http://127.0.0.1:$WEB_PORT/")" || fail "web UI not reachable"
 grep -q 'src="app/autotrim.js' <<< "$page" || fail "the side panel script isn't in the web page"
 curl -fsS -o /dev/null "http://127.0.0.1:$WEB_PORT/app/autotrim.js" || fail "app/autotrim.js not served"
+# Status page, also without the trailing slash
+status_page="$(curl -fsSL "http://127.0.0.1:$WEB_PORT/autotrim")" || fail "status page not reachable"
+grep -q 'data-autotrim-page' <<< "$status_page" || fail "the status page isn't served at /autotrim/"
+if grep -q 'UNIQUE_VERSION' <<< "$status_page"; then fail "UNIQUE_VERSION not replaced in the status page"; fi
 status="$(autotrim_api GET status)" || fail "auto-trim API not reachable through nginx"
 grep -q '"enabled":false' <<< "$status" || fail "auto-trim should be off by default: $status"
 autotrim_pid="$(autotrim_pid)" || fail "auto-trim service not running"
@@ -377,6 +417,9 @@ autotrim_uid="$(docker exec "$NAME" awk '/^Uid:/{print $2}' "/proc/$autotrim_pid
 autotrim_nice="$(docker exec "$NAME" awk '{print $19}' "/proc/$autotrim_pid/stat")"
 echo "  uid: $autotrim_uid, niceness: $autotrim_nice"
 [[ "$autotrim_uid" == 1000 && "$autotrim_nice" == 19 ]] || fail "auto-trim should run as uid 1000 with niceness 19"
+# As if LosslessCut had just saved the project of '[0-3]edited.mp4': it waits
+#  10 min after the last save
+app_exec touch '/medias/auto/[0-3]edited-proj.llc'
 autotrim_api POST enabled '{"enabled":true}' >/dev/null || fail "could not switch auto-trim on"
 wait_for_file '/medias/auto/AUTO ONE-trimmed.mp4' 120 || fail "auto-trim didn't trim '[2-5,8-end]auto one.mp4'"
 # AUTO TWO-trimmed.mp4 exists already: not overwritten
@@ -391,6 +434,36 @@ duration="$(media_duration '/medias/auto/AUTO TWO-trimmed.mp4')"
 between "$duration" 19 21 || fail "the existing AUTO TWO-trimmed.mp4 was overwritten"
 check_trashed '/medias/auto/[2-5,8-end]auto one.mp4'
 check_trashed '/medias/auto/[0-3]auto two.mp4'
+# The original's modified date, permissions and tags (also when merging)
+for pair in 'AUTO ONE-trimmed.mp4:[2-5,8-end]auto one.mp4' 'AUTO TWO-trimmed (2).mp4:[0-3]auto two.mp4'; do
+    IFS=: read -r output source <<< "$pair"
+    output="/medias/auto/$output"
+    # The trash keeps the source's modified date and permissions
+    source="/medias/.Trash-1000/files/$source"
+    expected="$(docker exec "$NAME" stat -c '%Y %a' "$source")" || fail "can't read $source"
+    actual="$(docker exec "$NAME" stat -c '%Y %a' "$output")" || fail "can't read $output"
+    echo "  $output: $(docker exec "$NAME" stat -c 'modified %y, mode %a' "$output")"
+    [[ "$actual" == "$expected" && "${expected% *}" -lt 1600000000 ]] \
+        || fail "$output: modified date and mode '$actual' instead of the original's '$expected'"
+    tags="$(docker exec -e LD_LIBRARY_PATH=/LosslessCut/resources "$NAME" /LosslessCut/resources/ffprobe -v error \
+        -show_entries format_tags=title,comment,creation_time -of default=nw=1 "$output")"
+    echo "  tags: $(tr '\n' ' ' <<< "$tags")"
+    for tag in 'TAG:title=Smoke title' 'TAG:comment=Keep me' 'TAG:creation_time=2020-01-02T03:04:05'; do
+        grep -qF "$tag" <<< "$tags" || fail "$output: tag ${tag#TAG:} not kept"
+    done
+done
+# Edited in LosslessCut: waiting, not trimmed
+for _ in $(seq 1 30); do
+    status="$(autotrim_api GET status)" || fail "auto-trim API not reachable"
+    grep -qF '"name":"[0-3]edited.mp4","reason":"edited in LosslessCut"' <<< "$status" && break
+    sleep 1
+done
+grep -qF '"name":"[0-3]edited.mp4","reason":"edited in LosslessCut"' <<< "$status" \
+    || fail "'[0-3]edited.mp4' isn't listed as waiting, edited in LosslessCut: $status"
+if ! docker exec "$NAME" test -e '/medias/auto/[0-3]edited.mp4' || docker exec "$NAME" test -e '/medias/auto/EDITED-trimmed.mp4'; then
+    fail "'[0-3]edited.mp4' was trimmed while edited in LosslessCut"
+fi
+echo "  waiting, edited in LosslessCut: /medias/auto/[0-3]edited.mp4"
 autotrim_logs="$(docker logs "$NAME" 2>&1 | grep '\[autotrim')" || fail "no auto-trim log"
 while IFS= read -r line; do echo "  $line"; done <<< "$autotrim_logs"
 # One at a time: each trim ends before the next one starts
@@ -399,14 +472,16 @@ concurrent="$(awk '/ trimming /{n++; if (n > m) m = n} / (done|failed|cancelled)
 if grep -q ' failed ' <<< "$autotrim_logs"; then fail "a background trim failed"; fi
 if command -v node >/dev/null \
     && node -e "try { require.resolve('playwright-core') } catch { require.resolve('playwright') }" 2>/dev/null; then
-    log "Checking the side panel in a browser"
-    node "$(dirname "$0")/ui-check.cjs" "http://127.0.0.1:$WEB_PORT/" "$OUT_DIR/07-side-panel.png" on 'AUTO ONE-trimmed.mp4' \
-        || fail "the auto-trim section of the side panel doesn't work"
+    log "Checking the auto-trim views in a browser"
+    # While '[0-3]edited.mp4' waits: status box, badge, side panel, status page
+    node "$(dirname "$0")/ui-check.cjs" "http://127.0.0.1:$WEB_PORT/" "$OUT_DIR" on 'AUTO ONE-trimmed.mp4' '[0-3]edited.mp4' \
+        || fail "the auto-trim views don't work"
 else
-    log "Side panel not checked in a browser (needs node and playwright-core)"
+    log "Auto-trim views not checked in a browser (needs node and playwright-core)"
 fi
 status="$(autotrim_api POST enabled '{"enabled":false}')" || fail "could not switch auto-trim off"
 grep -q '"enabled":false' <<< "$status" || fail "auto-trim still on: $status"
+grep -q '"waiting":\[\]' <<< "$status" || fail "videos still listed as waiting once switched off: $status"
 
 log "Resource usage"
 docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}' "$NAME" \

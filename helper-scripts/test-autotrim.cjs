@@ -148,6 +148,72 @@ test('videos being edited in LosslessCut wait', () => {
     assert.match(script, /^MARKER="docker-losslesscut filename-segments"$/m);
 });
 
+test('time left', () => {
+    assert.equal(at.estimateSecondsLeft({ progress: 0.25, elapsedMs: 30000 }), 90);
+    assert.equal(at.estimateSecondsLeft({ progress: 0.01, elapsedMs: 30000 }), undefined, 'too early');
+    assert.equal(at.estimateSecondsLeft({ progress: 0.5, elapsedMs: 1000 }), undefined, 'too early');
+    assert.equal(at.estimateSecondsLeft({ progress: 1, elapsedMs: 30000 }), undefined, 'done');
+    assert.equal(at.estimateSecondsLeft({ progress: 0.999, elapsedMs: 30000 }), 1);
+});
+
+test('file-level tags kept when merging', () => {
+    const tags = {
+        major_brand: 'isom', minor_version: '512', compatible_brands: 'isomiso2avc1mp41', encoder: 'Lavf62.3.100',
+        title: 'My title', comment: 'a=b; c', creation_time: '2020-01-02T03:04:05.000000Z', 'com.apple.quicktime.make': 'X', empty: '',
+    };
+    assert.deepEqual(at.getMetadataArgs(tags), ['-metadata', 'title=My title', '-metadata', 'comment=a=b; c',
+        '-metadata', 'creation_time=2020-01-02T03:04:05.000000Z', '-metadata', 'com.apple.quicktime.make=X']);
+    assert.deepEqual(at.getMetadataArgs(undefined), []);
+    const merge = (opts) => at.getMergeArgs({ output: 'o.mp4', streams, outFormat: 'mp4', tags, ...opts });
+    assert.ok(includesInOrder(merge({}), '-metadata', 'title=My title'));
+    assert.ok(includesInOrder(merge({}), '-movflags', '+faststart'));
+    assert.ok(!merge({ preserveMetadata: 'nonglobal' }).includes('title=My title'), 'nonglobal: no file-level tags');
+    assert.ok(includesInOrder(merge({ preserveMetadata: 'none' }), '-map_metadata', '-1'), 'none');
+    assert.ok(!merge({ preserveMetadata: 'none' }).includes('title=My title'));
+    assert.ok(includesInOrder(merge({ preserveMovData: true }), '-movflags', '+use_metadata_tags+faststart'));
+    const cut = (opts) => at.getCutArgs({ input: 'i.mp4', output: 'o.mp4', start: 2, end: 5, duration: 20, streams, outFormat: 'mp4', ...opts });
+    assert.ok(includesInOrder(cut({}), '-map_metadata', '0'));
+    assert.ok(includesInOrder(cut({ preserveMetadata: 'none' }), '-map_metadata', '-1'));
+    assert.ok(includesInOrder(cut({ preserveMetadata: 'nonglobal' }), '-map_metadata:g', '-1'));
+    assert.ok(includesInOrder(cut({ preserveMovData: true }), '-movflags', '+use_metadata_tags+faststart'));
+});
+
+test('status page and API on the socket', async () => {
+    const os = require('node:os');
+    const http = require('node:http');
+    const { spawn } = require('node:child_process');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'autotrim-test-'));
+    const socket = path.join(dir, 'at.sock');
+    const daemon = spawn(process.execPath, [path.join(root, 'rootfs/opt/losslesscut-tools/autotrim.cjs')], {
+        env: { ...process.env, AUTOTRIM_SOCKET: socket, AUTOTRIM_STATE_FILE: path.join(dir, 'state.json'), LOSSLESSCUT_FILENAME_SEGMENTS_PATHS: dir },
+        stdio: 'ignore',
+    });
+    const get = (urlPath) => new Promise((resolve, reject) => {
+        http.get({ socketPath: socket, path: urlPath }, (res) => {
+            let body = '';
+            res.on('data', (d) => { body += d; });
+            res.on('end', () => resolve({ status: res.statusCode, type: res.headers['content-type'], body }));
+        }).on('error', reject);
+    });
+    try {
+        for (let i = 0; i < 50 && !fs.existsSync(socket); i += 1) {
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise((r) => { setTimeout(r, 100); });
+        }
+        const pageRes = await get('/');
+        assert.equal(pageRes.status, 200);
+        assert.match(pageRes.type, /^text\/html/);
+        assert.match(pageRes.body, /data-autotrim-page/);
+        assert.match(pageRes.body, /\.\.\/app\/autotrim\.js/);
+        const statusRes = JSON.parse((await get('/status')).body);
+        assert.equal(statusRes.enabled, false, 'off by default');
+        assert.deepEqual([statusRes.queue, statusRes.pending, statusRes.waiting], [[], [], []]);
+    } finally {
+        daemon.kill();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test('short error messages', () => {
     assert.equal(at.cleanError('[mov,mp4,m4a,3gp,3g2,mj2 @ 0x5610169aa0c0] moov atom not found /medias/a b/[0-3]x.mp4: Invalid data', '/medias/a b/[0-3]x.mp4'),
         'moov atom not found [0-3]x.mp4: Invalid data');
@@ -161,8 +227,9 @@ test('same video extensions as filename-segments', () => {
 
 test('side panel script', () => {
     const js = fs.readFileSync(path.join(root, 'rootfs/opt/noVNC/app/autotrim.js'), 'utf8');
-    // Relative URL: works behind a reverse proxy with a sub-path
-    assert.match(js, /const API = 'autotrim\/';/);
+    // Relative URLs: work behind a reverse proxy with a sub-path
+    assert.match(js, /const API = isPage \? '' : 'autotrim\/';/);
+    assert.doesNotMatch(js, /fetch\(['`]\//, 'no absolute URL');
     // File names are never inserted as HTML
     assert.doesNotMatch(js.replace(/section\.innerHTML = `[^`]*`;/, ''), /innerHTML/);
 });

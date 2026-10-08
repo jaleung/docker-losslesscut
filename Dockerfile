@@ -3,7 +3,7 @@
 
 ARG app_version="3.69.0"
 # Bump if publishing a new image with the same app_version, reset to 1 with new app versions
-ARG image_revision="6"
+ARG image_revision="7"
 # Pinned for reproducible builds, see https://hub.docker.com/r/jlesage/baseimage-gui/tags
 ARG baseimage="jlesage/baseimage-gui:debian-13-v4.14.0"
 # BUILDPLATFORM and TARGETPLATFORM are defined when using BuildKit (i.e. docker buildx)
@@ -107,9 +107,10 @@ RUN glib-compile-schemas /usr/share/glib-2.0/schemas \
         /etc/services.d/autotrim/run /etc/services.d/autotrim/disabled \
         /opt/losslesscut-tools/filename-segments /opt/losslesscut-tools/healthcheck /usr/local/bin/gio
 
-# Background trimming (rootfs/opt/losslesscut-tools/autotrim.cjs): its section
-#  in the side panel of the web page, and its API at /autotrim/. The build
-#  fails if the base image's files changed and the patches don't apply
+# Background trimming (rootfs/opt/losslesscut-tools/autotrim.cjs): its views in
+#  the web page (app/autotrim.js: side panel section, status box, badge on the
+#  side panel tab), and its status page and API at /autotrim/. The build fails
+#  if the base image's files changed and the patches don't apply
 RUN sed -i 's|^\(\s*\)# Access to favicons\.|\1include /opt/losslesscut-tools/nginx-autotrim.conf;\n\n&|' \
         /opt/base/etc/nginx/default_site.conf \
     && grep -q 'include /opt/losslesscut-tools/nginx-autotrim.conf;' /opt/base/etc/nginx/default_site.conf \
