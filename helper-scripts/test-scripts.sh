@@ -6,6 +6,8 @@
 # - rootfs/opt/losslesscut-tools/filename-segments (segments from file names)
 # - rootfs/opt/losslesscut-tools/settings-defaults.cjs (default settings)
 # - rootfs/usr/local/bin/gio (trash)
+# - rootfs/opt/losslesscut-tools/autotrim.cjs (background trimming, see
+#   test-autotrim.cjs)
 # Runs without Docker: needs sh, awk, find, and node for the settings test.
 
 set -euo pipefail
@@ -221,6 +223,10 @@ if grep -qxF "trash -- $g/config/settings.txt" "$tmp/bin/gio-real.log"; then pas
 if trash "$g/storage/missing.mp4"; then fail "missing file: exit 0"; else pass "missing file: exit 1"; fi
 GIO_REAL="$tmp/bin/gio-real" sh "$GIO" --version
 if grep -qx -- "--version" "$tmp/bin/gio-real.log"; then pass "other commands: real gio"; else fail "other commands not passed to gio"; fi
+
+if command -v node > /dev/null; then
+    node helper-scripts/test-autotrim.cjs || failures=$((failures + 1))
+fi
 
 if [[ $failures -gt 0 ]]; then
     echo "$failures test(s) failed"

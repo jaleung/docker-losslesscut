@@ -63,6 +63,9 @@ services:
       #  every mapped folder). Set LOSSLESSCUT_FILENAME_SEGMENTS to "0" to
       #  disable
       # LOSSLESSCUT_FILENAME_SEGMENTS_PATHS: /storage/To cut
+      # Background trimming of these videos: switch "Auto-trim" on in the
+      #  side panel of the web page. Seconds between two checks of the folders
+      # LOSSLESSCUT_AUTOTRIM_INTERVAL: "60"
     # Leave one core and most of the memory for QTS and other services
     cpus: "3.0"
     # Raise to 3g if you work with 4K files and see LosslessCut restarting

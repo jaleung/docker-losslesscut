@@ -1,0 +1,20 @@
+#!/bin/sh
+#
+# Docker health check: LosslessCut runs and the web server listens.
+# LosslessCut's processes are told apart from the background trimming, which
+#  runs LosslessCut's Electron too, by their --no-sandbox flag (see
+#  /startapp.sh).
+#
+
+app_running() {
+    for pid in $(pidof losslesscut); do
+        grep -qa -- '--no-sandbox' "/proc/$pid/cmdline" 2>/dev/null && return 0
+    done
+    return 1
+}
+
+app_running || exit 1
+# WEB_LISTENING_PORT=-1 disables the web UI
+[ "${WEB_LISTENING_PORT:-5800}" = "-1" ] || nc -z 127.0.0.1 "${WEB_LISTENING_PORT:-5800}"
+
+# vim:ft=sh:ts=4:sw=4:et:sts=4

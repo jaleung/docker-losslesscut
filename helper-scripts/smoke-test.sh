@@ -7,6 +7,9 @@
 #  - open a video named "[2-5,8-end]....mp4" in a second mapped folder
 #    (/medias): segments loaded from the name, exported and merged, source
 #    moved to the trash of that folder
+#  Then background trimming (auto-trim): off by default, switched on through
+#  nginx like the side panel does, videos trimmed one at a time, never
+#  overwriting, sources in the trash, and the side panel in a browser.
 #  Then, in a second container with the image defaults (HTTPS and
 #  WEB_NOTIFICATION), check that the "Export finished" notification is sent.
 #
@@ -18,7 +21,9 @@
 #   SMOKE_MEMORY  memory limit (2g)
 #   SMOKE_TIMEOUT seconds to wait for the container to become healthy (300)
 #
-# Screenshots are taken if vncdo (pip install vncdotool) is available.
+# Screenshots are taken if vncdo (pip install vncdotool) is available. The side
+#  panel is checked if node and playwright-core (or playwright) are available,
+#  with Chrome from CHROME_PATH or Playwright's browsers.
 
 set -euo pipefail
 
@@ -187,11 +192,36 @@ log_has() {
     grep -q -- "$1" <<< "$logs"
 }
 
-# Main LosslessCut process (Electron's children have --type=...)
+# Background trimming API, through nginx like the side panel
+# Usage: autotrim_api METHOD PATH [JSON BODY]
+autotrim_api() {
+    if [[ $# -ge 3 ]]; then
+        curl -fsS -X "$1" -H 'Content-Type: application/json' -d "$3" "http://127.0.0.1:$WEB_PORT/autotrim/$2"
+    else
+        curl -fsS -X "$1" "http://127.0.0.1:$WEB_PORT/autotrim/$2"
+    fi
+}
+
+# Main LosslessCut process: Electron's children have --type=..., and the
+#  background trimming runs LosslessCut's Electron too (autotrim.cjs)
 main_pid() {
     docker exec "$NAME" sh -c '
         for p in $(pidof losslesscut); do
-            tr "\0" " " < /proc/$p/cmdline | grep -q -- "--type=" || { echo $p; exit 0; }
+            case "$(tr "\0" " " < "/proc/$p/cmdline")" in
+                *--type=*|*autotrim.cjs*) ;;
+                *) echo "$p"; exit 0 ;;
+            esac
+        done
+        exit 1'
+}
+
+# Background trimming process
+autotrim_pid() {
+    docker exec "$NAME" sh -c '
+        for p in $(pidof losslesscut); do
+            case "$(tr "\0" " " < "/proc/$p/cmdline")" in
+                *autotrim.cjs*) echo "$p"; exit 0 ;;
+            esac
         done
         exit 1'
 }
@@ -214,7 +244,10 @@ docker run --rm -v "$VOLUME:/storage" --entrypoint sh "$IMAGE" -c "
     && chown -R 1000:1000 /storage"
 docker volume create "$MEDIA_VOLUME" >/dev/null
 docker run --rm -v "$VOLUME:/storage" -v "$MEDIA_VOLUME:/medias" --entrypoint sh "$IMAGE" -c "
-    cp $CLIP '$FRONT_CLIP' && chown -R 1000:1000 /medias"
+    cp $CLIP '$FRONT_CLIP' \
+    && mkdir /medias/auto && cp $CLIP '/medias/auto/[2-5,8-end]auto one.mp4' \
+    && cp $CLIP '/medias/auto/[0-3]auto two.mp4' && cp $CLIP '/medias/auto/AUTO TWO-trimmed.mp4' \
+    && chown -R 1000:1000 /medias"
 
 # LosslessCut settings as if the user had set them: no confirmation before
 #  exporting, export + merge. The image's defaults are added on top
@@ -227,9 +260,10 @@ docker run --rm -v "$CONFIG_VOLUME:/config" --entrypoint sh "$IMAGE" -c "
 
 log "Starting the container (cpus=$SMOKE_CPUS, memory=$SMOKE_MEMORY)"
 # HTTP: with HTTPS (the default), VNC is behind SSL, which vncdo can't use
+# Auto-trim: scans every 5s, picks videos unchanged for 3s
 start_container "$CLIP" -v "$CONFIG_VOLUME:/config" -v "$MEDIA_VOLUME:/medias" \
     -p 127.0.0.1::5800 -p 127.0.0.1::5900 -e DISPLAY_WIDTH=1280 -e DISPLAY_HEIGHT=720 \
-    -e SECURE_CONNECTION=0 -e WEB_NOTIFICATION=0
+    -e SECURE_CONNECTION=0 -e WEB_NOTIFICATION=0 -e LOSSLESSCUT_AUTOTRIM_INTERVAL=5 -e AUTOTRIM_SETTLE=3
 
 WEB_PORT="$(docker port "$NAME" 5800/tcp | head -n 1 | sed 's/.*://')"
 VNC_PORT="$(docker port "$NAME" 5900/tcp | head -n 1 | sed 's/.*://')"
@@ -331,6 +365,48 @@ if command -v vncdo >/dev/null; then
     docker exec "$NAME" test -s "$keyfile" || fail "the file dialog settings weren't saved to $keyfile"
     docker exec "$NAME" cat "$keyfile" | sed 's/^/  /'
 fi
+
+log "Checking background trimming (auto-trim)"
+page="$(curl -fsS "http://127.0.0.1:$WEB_PORT/")" || fail "web UI not reachable"
+grep -q 'src="app/autotrim.js' <<< "$page" || fail "the side panel script isn't in the web page"
+curl -fsS -o /dev/null "http://127.0.0.1:$WEB_PORT/app/autotrim.js" || fail "app/autotrim.js not served"
+status="$(autotrim_api GET status)" || fail "auto-trim API not reachable through nginx"
+grep -q '"enabled":false' <<< "$status" || fail "auto-trim should be off by default: $status"
+autotrim_pid="$(autotrim_pid)" || fail "auto-trim service not running"
+autotrim_uid="$(docker exec "$NAME" awk '/^Uid:/{print $2}' "/proc/$autotrim_pid/status")"
+autotrim_nice="$(docker exec "$NAME" awk '{print $19}' "/proc/$autotrim_pid/stat")"
+echo "  uid: $autotrim_uid, niceness: $autotrim_nice"
+[[ "$autotrim_uid" == 1000 && "$autotrim_nice" == 19 ]] || fail "auto-trim should run as uid 1000 with niceness 19"
+autotrim_api POST enabled '{"enabled":true}' >/dev/null || fail "could not switch auto-trim on"
+wait_for_file '/medias/auto/AUTO ONE-trimmed.mp4' 120 || fail "auto-trim didn't trim '[2-5,8-end]auto one.mp4'"
+# AUTO TWO-trimmed.mp4 exists already: not overwritten
+wait_for_file '/medias/auto/AUTO TWO-trimmed (2).mp4' 60 || fail "auto-trim didn't trim '[0-3]auto two.mp4' to 'AUTO TWO-trimmed (2).mp4'"
+for output in '/medias/auto/AUTO ONE-trimmed.mp4:14.5:15.6' '/medias/auto/AUTO TWO-trimmed (2).mp4:2.5:4.5'; do
+    IFS=: read -r file min max <<< "$output"
+    duration="$(media_duration "$file")" || fail "trimmed file looks broken: $file"
+    echo "  trimmed: $file (${duration}s)"
+    between "$duration" "$min" "$max" || fail "unexpected duration ${duration}s for $file (expected $min-$max s)"
+done
+duration="$(media_duration '/medias/auto/AUTO TWO-trimmed.mp4')"
+between "$duration" 19 21 || fail "the existing AUTO TWO-trimmed.mp4 was overwritten"
+check_trashed '/medias/auto/[2-5,8-end]auto one.mp4'
+check_trashed '/medias/auto/[0-3]auto two.mp4'
+autotrim_logs="$(docker logs "$NAME" 2>&1 | grep '\[autotrim')" || fail "no auto-trim log"
+while IFS= read -r line; do echo "  $line"; done <<< "$autotrim_logs"
+# One at a time: each trim ends before the next one starts
+concurrent="$(awk '/ trimming /{n++; if (n > m) m = n} / (done|failed|cancelled) /{n--} END {print m + 0}' <<< "$autotrim_logs")"
+[[ "$concurrent" == 1 ]] || fail "$concurrent trims at the same time, expected 1"
+if grep -q ' failed ' <<< "$autotrim_logs"; then fail "a background trim failed"; fi
+if command -v node >/dev/null \
+    && node -e "try { require.resolve('playwright-core') } catch { require.resolve('playwright') }" 2>/dev/null; then
+    log "Checking the side panel in a browser"
+    node "$(dirname "$0")/ui-check.cjs" "http://127.0.0.1:$WEB_PORT/" "$OUT_DIR/07-side-panel.png" on 'AUTO ONE-trimmed.mp4' \
+        || fail "the auto-trim section of the side panel doesn't work"
+else
+    log "Side panel not checked in a browser (needs node and playwright-core)"
+fi
+status="$(autotrim_api POST enabled '{"enabled":false}')" || fail "could not switch auto-trim off"
+grep -q '"enabled":false' <<< "$status" || fail "auto-trim still on: $status"
 
 log "Resource usage"
 docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}' "$NAME" \
