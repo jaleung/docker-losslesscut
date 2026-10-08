@@ -276,6 +276,13 @@ To follow it, while LosslessCut is in use:
 * **Side panel**: the switch, the video being trimmed, the waiting ones and the last results. It refreshes as soon as it opens.
 * **Status page**: `https://<NAS IP>:5800/autotrim/` shows everything on one page: the switch, the progress, the whole queue with full paths (and, for a video edited in LosslessCut, the earliest time it can be trimmed), and the last 20 results. Handy in another tab or on a phone. *Open full list* in the status box and in the side panel leads there.
 
+The status page also has a **scratch pad** to write the `[...]` of a file name before renaming the video, e.g. with times copied from mpv:
+
+* Pasted text loses its line breaks: a time copied with a line break (e.g. by `echo ... | clip`) goes in at the cursor without it.
+* The field starts as `[]` with the cursor inside, ready to paste. Whenever you empty it (or click *Clear*), `[]` comes back with the cursor inside. Ctrl+Z still undoes.
+* As you type, the line under it checks the brackets like auto-trim will: ✓ with the parts to keep as h:mm:ss (to compare with mpv), or ✗ with what's wrong (e.g. `Part 2 "2080-1000": the end must be after the start`). A name with a mistake in its brackets is otherwise skipped without a word.
+* *Copy* copies the whole field, ready to paste as (part of) the new name. What's in the field is kept by the browser, also after a reload.
+
 `LOSSLESSCUT_AUTOTRIM=0` removes the feature and all of the above from the web page, `LOSSLESSCUT_AUTOTRIM_INTERVAL` changes how often the folders are checked, and `LOSSLESSCUT_FILENAME_SEGMENTS_PATHS` which folders (see [Environment Variables](#environment-variables)). The container log shows what's done (`[autotrim]` lines).
 
 ### Hardware Acceleration
@@ -470,7 +477,7 @@ make test     # the script tests, then smoke test the image built by "make" (nee
 make buildx   # build for amd64, arm64 and armv7
 ```
 
-The smoke test ([`helper-scripts/smoke-test.sh`](helper-scripts/smoke-test.sh)) starts the image with 3 CPUs and 2GB of memory, waits for it to be healthy, checks libraries, flags, user and priority of LosslessCut, then opens generated videos and exports them through LosslessCut's HTTP API: project files from file names, export defaults (output names, cleanup to the trash), file dialog search, background trimming (queue, name clashes, metadata kept, trash, one at a time, waiting while edited in LosslessCut), and notifications with the image's defaults (HTTPS). With `node` and `playwright-core` (`NODE_PATH`, and Chrome in `CHROME_PATH`), it also checks the auto-trim status box, side panel tab badge, side panel and status page in a browser ([`helper-scripts/ui-check.cjs`](helper-scripts/ui-check.cjs)). Logs and screenshots are written to `smoke-test-output/`.
+The smoke test ([`helper-scripts/smoke-test.sh`](helper-scripts/smoke-test.sh)) starts the image with 3 CPUs and 2GB of memory, waits for it to be healthy, checks libraries, flags, user and priority of LosslessCut, then opens generated videos and exports them through LosslessCut's HTTP API: project files from file names, export defaults (output names, cleanup to the trash), file dialog search, background trimming (queue, name clashes, metadata kept, trash, one at a time, waiting while edited in LosslessCut), and notifications with the image's defaults (HTTPS). With `node` and `playwright-core` (`NODE_PATH`, and Chrome in `CHROME_PATH`), it also checks the auto-trim status box, side panel tab badge, side panel, status page and its scratch pad in a browser ([`helper-scripts/ui-check.cjs`](helper-scripts/ui-check.cjs)). Logs and screenshots are written to `smoke-test-output/`.
 
 The build itself fails if a library needed by LosslessCut or FFmpeg is missing, on every architecture.
 

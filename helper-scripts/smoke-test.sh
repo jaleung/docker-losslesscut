@@ -12,7 +12,7 @@
 #  overwriting, keeping the originals' modified date, permissions and tags,
 #  sources in the trash, a video being edited in LosslessCut left waiting, and
 #  its views in a browser (status box, side panel tab badge, side panel,
-#  status page).
+#  status page and its scratch pad).
 #  Then, in a second container with the image defaults (HTTPS and
 #  WEB_NOTIFICATION), check that the "Export finished" notification is sent.
 #

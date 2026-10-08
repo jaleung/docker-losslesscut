@@ -4,6 +4,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -232,6 +233,75 @@ test('side panel script', () => {
     assert.doesNotMatch(js, /fetch\(['`]\//, 'no absolute URL');
     // File names are never inserted as HTML
     assert.doesNotMatch(js.replace(/section\.innerHTML = `[^`]*`;/, ''), /innerHTML/);
+});
+
+// Scratch pad of the status page (app/autotrim.js)
+const page = require(path.join(root, 'rootfs/opt/noVNC/app/autotrim.js'));
+
+test('scratch pad: same segments as filename-segments', () => {
+    const tool = path.join(root, 'rootfs/opt/losslesscut-tools/filename-segments');
+    const names = [
+        // The names of test-scripts.sh
+        'New Video[6604.630613-9797.852513].mp4', 'New Video[1.5-4,8.25-12].mp4', 'clip[0-120].mkv',
+        'clip[0-end].mkv', 'clip[6196-END].MP4', 'clip[ 10 - 20 , 30-end ].mp4', 'clip[30-end].mp4',
+        'clip[0006604.630-0009797.85].mp4', 'clip[0.5-1].mp4', 'my [draft] clip[5-6].mp4',
+        '[0-968.968000,2080.078000-4197.393200,4682.678000-end]new video.mp4', '[5-6]my [draft] clip.mp4',
+        '[5-6] clip.mp4', '[draft]clip[5-6].mp4', '[1-2]clip[3-4].mp4', '[1-2].mp4', '[1.5-2]clip', 'clip[1.5-2]',
+        '[2-1]clip.mp4', 'clip [1-2] copy.mp4', 'Holiday[draft].mp4', 'clip[20-10].mp4', 'clip[10-10].mp4',
+        'clip[1-2,].mp4', 'clip[1-2,3].mp4', 'clip[].mp4', 'clip[-5].mp4', 'clip[1,5-2].mp4', 'clip[1:00-2:00].mp4',
+        '[0-003747.014316-end]sone-521-4k.mp4', 'clip[1-2] copy.mp4', 'clip.mp4',
+        // What the scratch pad holds
+        '[968.968000-1000.5]', '[ 1 - 2 ]', '[1-2] ', '[0-003747.014316-end]', '[1-2,]', '[]', '[ ]', '',
+        '[0-968.968000,2080.078000-4197.393200,4682.678000-end]', '[\t1-2\t]', '[1-2]]', '[[1-2]', '[1-2', '1-2]',
+        '[1 -2,3- end]', '[01-2]', '[1.-2]', '[.5-2]', '[1-2.5.5]', '[END-5]', '[1-2]new video', 'new video[1-2]',
+        '[1-2]x.mp4', '[1-2.5]', '[2-1.5,3-4]', '[1-2,,3-4]', '[1-2],[3-4]', '[1 - 2 - 3]', '[5-end]', '[5-End ]',
+    ];
+    for (const name of names) {
+        let expected;
+        try {
+            expected = JSON.parse(execFileSync('sh', [tool, 'parse', name], { encoding: 'utf8' }));
+        } catch {
+            expected = undefined;
+        }
+        const got = page.parseNameSegments(name);
+        if (expected === undefined) {
+            assert.ok(got.error, `${JSON.stringify(name)}: should be wrong, got ${JSON.stringify(got)}`);
+        } else {
+            assert.deepEqual(got, { segments: expected.map(({ start, end }) => ({ start, end })) }, JSON.stringify(name));
+        }
+    }
+});
+
+test('scratch pad: what is wrong', () => {
+    const error = (text) => page.parseNameSegments(text).error;
+    assert.equal(error('[2080-1000]'), 'Part 1 "2080-1000": the end must be after the start');
+    assert.equal(error('[0-1,5-5]'), 'Part 2 "5-5": the end must be after the start');
+    assert.equal(error('[0-003747.014316-end]'), 'Part 1 "0-003747.014316-end": write start-end in seconds, e.g. 10-20 or 30-end');
+    assert.equal(error('[1:00-2:00]'), 'Part 1 "1:00-2:00": times must be in seconds (e.g. 3725.5), not h:mm:ss');
+    assert.equal(error('[1-2,]'), 'Part 2 is empty (extra comma?)');
+    assert.equal(error('[ ]'), 'Nothing in the brackets');
+    assert.equal(error('new video'), 'No [...] at the start or the end');
+    // The block at the start is the one meant
+    assert.equal(error('[5-2]clip[x]'), 'Part 1 "5-2": the end must be after the start');
+});
+
+test('scratch pad: pasted line breaks removed', () => {
+    assert.equal(page.cleanPastedText('968.968000 \r\n'), '968.968000');
+    assert.equal(page.cleanPastedText('\n12\n'), '12');
+    assert.equal(page.cleanPastedText('a\r\nb'), 'a b');
+    assert.equal(page.cleanPastedText(' 1 \r 2 \n\n 3 '), '1 2 3');
+    assert.equal(page.cleanPastedText('\r\n'), '');
+    // Without line breaks: as is
+    assert.equal(page.cleanPastedText(' new video '), ' new video ');
+});
+
+test('scratch pad: times shown as h:mm:ss', () => {
+    assert.equal(page.formatTime(0), '0:00');
+    assert.equal(page.formatTime(968.968), '16:08.968');
+    assert.equal(page.formatTime(4197.3932), '1:09:57.393');
+    assert.equal(page.formatTime(61.5), '1:01.500');
+    assert.equal(page.formatTime(59.9996), '1:00');
+    assert.equal(page.formatTime(3600), '1:00:00');
 });
 
 (async () => {
