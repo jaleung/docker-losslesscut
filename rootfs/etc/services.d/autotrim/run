@@ -1,0 +1,13 @@
+#!/bin/sh
+#
+# Background trimming of videos with segments in their name, switched on and
+#  off in the side panel of the web page. See /opt/losslesscut-tools/autotrim.cjs
+#
+
+set -u # Treat unset variables as an error.
+
+# LosslessCut's Electron, as Node.js
+export ELECTRON_RUN_AS_NODE=1
+exec /LosslessCut/losslesscut /opt/losslesscut-tools/autotrim.cjs
+
+# vim:ft=sh:ts=4:sw=4:et:sts=4

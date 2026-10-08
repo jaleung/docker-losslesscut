@@ -54,9 +54,15 @@ jobs:
       - name: Install VNC client for screenshots
         run: pipx install vncdotool
 
+      # Drives the runner's Chrome to check the side panel of the web page
+      - name: Install browser automation
+        run: npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/ui-check" playwright-core@1
+
       - name: Smoke test
         env:
           OUT_DIR: ${{ runner.temp }}/smoke-test-output
+          NODE_PATH: ${{ runner.temp }}/ui-check/node_modules
+          CHROME_PATH: /usr/bin/google-chrome
         run: helper-scripts/smoke-test.sh losslesscut:ci
 
       - name: Upload screenshots and logs

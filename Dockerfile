@@ -3,7 +3,7 @@
 
 ARG app_version="3.69.0"
 # Bump if publishing a new image with the same app_version, reset to 1 with new app versions
-ARG image_revision="5"
+ARG image_revision="6"
 # Pinned for reproducible builds, see https://hub.docker.com/r/jlesage/baseimage-gui/tags
 ARG baseimage="jlesage/baseimage-gui:debian-13-v4.14.0"
 # BUILDPLATFORM and TARGETPLATFORM are defined when using BuildKit (i.e. docker buildx)
@@ -104,7 +104,17 @@ RUN glib-compile-schemas /usr/share/glib-2.0/schemas \
     && mkdir -p /storage \
     && chmod 0755 /startapp.sh /etc/cont-init.d/55-losslesscut.sh \
         /etc/services.d/filename-segments/run /etc/services.d/filename-segments/disabled \
+        /etc/services.d/autotrim/run /etc/services.d/autotrim/disabled \
         /opt/losslesscut-tools/filename-segments /usr/local/bin/gio
+
+# Background trimming (rootfs/opt/losslesscut-tools/autotrim.cjs): its section
+#  in the side panel of the web page, and its API at /autotrim/. The build
+#  fails if the base image's files changed and the patches don't apply
+RUN sed -i 's|^\(\s*\)# Access to favicons\.|\1include /opt/losslesscut-tools/nginx-autotrim.conf;\n\n&|' \
+        /opt/base/etc/nginx/default_site.conf \
+    && grep -q 'include /opt/losslesscut-tools/nginx-autotrim.conf;' /opt/base/etc/nginx/default_site.conf \
+    && sed -i 's|^</head>|    <script src="app/autotrim.js?v=UNIQUE_VERSION" defer></script>\n</head>|' /opt/noVNC/index.html \
+    && grep -q 'src="app/autotrim.js' /opt/noVNC/index.html
 
 # Set app name, version and generate favicons
 # The icon is only available as SVG, which ImageMagick can't read by itself
@@ -135,6 +145,8 @@ ENV \
     LOSSLESSCUT_DEFAULT_SETTINGS=1 \
     LOSSLESSCUT_FILENAME_SEGMENTS=1 \
     LOSSLESSCUT_FILENAME_SEGMENTS_PATHS=auto \
+    LOSSLESSCUT_AUTOTRIM=1 \
+    LOSSLESSCUT_AUTOTRIM_INTERVAL=60 \
     LOSSLESSCUT_ARGS=
 
 # /storage is intentionally not a VOLUME to avoid creating anonymous volumes
