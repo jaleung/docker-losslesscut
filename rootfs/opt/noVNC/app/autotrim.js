@@ -103,9 +103,15 @@
             ui.step.textContent = `${s.current.step || 'Trimming'}… ${pct}%`;
         }
 
-        ui.queue.replaceChildren(...s.queue.slice(0, MAX_LISTED).map((q) => item(q.name, q.file)));
-        if (s.queue.length > MAX_LISTED) ui.queue.append(item(`and ${s.queue.length - MAX_LISTED} more`, '', 'text-muted'));
-        show(ui.queueSection, s.queue.length > 0);
+        // Queued, then postponed (e.g. being edited in LosslessCut)
+        const waiting = [
+            ...s.queue.map((q) => item(q.name, q.file)),
+            ...(s.waiting || []).map((w) => item(`${w.name} (${w.reason})`,
+                `${w.file}: ${w.reason}, not before ${time(w.until)}`, 'text-muted')),
+        ];
+        ui.queue.replaceChildren(...waiting.slice(0, MAX_LISTED));
+        if (waiting.length > MAX_LISTED) ui.queue.append(item(`and ${waiting.length - MAX_LISTED} more`, '', 'text-muted'));
+        show(ui.queueSection, waiting.length > 0);
 
         ui.recent.replaceChildren(...s.recent.slice(0, MAX_LISTED).map((r) => (r.ok
             ? item(`✓ ${r.outputName}`, `${time(r.at)}: ${r.name} → ${r.outputName}`, '')

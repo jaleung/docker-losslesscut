@@ -13,6 +13,9 @@
 //   video at a time, oldest first
 // - The segments come from the video's project file if there's one (it has
 //   your changes if you edited them in LosslessCut), else from the name
+// - A video opened or edited in LosslessCut waits until LosslessCut hasn't
+//   saved its project for AUTOTRIM_EDIT_QUIET seconds (10 minutes): LosslessCut
+//   saves the project file when it opens a video and after each change
 // - The trim is the same as LosslessCut's export with keyframe cut: each
 //   segment is copied with ffmpeg, then the parts are merged
 // - The output name and the cleanup (source and project file moved to the
@@ -48,6 +51,7 @@ const config = {
     folders: env.LOSSLESSCUT_FILENAME_SEGMENTS_PATHS || 'auto',
     intervalMs: seconds(env.LOSSLESSCUT_AUTOTRIM_INTERVAL, 60) * 1000,
     settleMs: seconds(env.AUTOTRIM_SETTLE, 30) * 1000,
+    editQuietMs: seconds(env.AUTOTRIM_EDIT_QUIET, 600) * 1000,
     notifySend: env.AUTOTRIM_NOTIFY_SEND || '/opt/base/bin/notify-send',
     gio: env.AUTOTRIM_GIO || 'gio',
     ionice: env.AUTOTRIM_IONICE || '/usr/bin/ionice',
@@ -57,6 +61,8 @@ const config = {
 const VIDEO_EXTENSIONS = new Set('mp4 m4v mov mkv webm avi ts m2ts mts mpg mpeg vob flv wmv 3gp mxf ogv mp3 m4a aac flac wav ogg opus mka'
     .split(' ').map((ext) => `.${ext}`));
 const TEMP_PREFIX = '.autotrim-';
+// In the project files created by filename-segments (LosslessCut's don't have it)
+const GENERATED_MARKER = '"generatedBy": "docker-losslesscut filename-segments"';
 const RECENT_MAX = 20;
 
 // LosslessCut's defaults (used when its settings don't have a template)
@@ -193,6 +199,12 @@ const sameStat = (a, b) => a != null && b != null && a.size === b.size && Math.r
 //  settleMs (copies are done)
 function isSettled({ previous, current, now, settleMs }) {
     return sameStat(previous, current) && now - current.mtimeMs >= settleMs;
+}
+
+// Is the video being worked on in LosslessCut? Its project file was saved by
+//  LosslessCut (not generated) less than quietMs ago
+function isBeingEdited({ projectText, projectMtimeMs, now, quietMs }) {
+    return projectText != null && !projectText.includes(GENERATED_MARKER) && now - projectMtimeMs < quietMs;
 }
 
 // Output format, like LosslessCut: from ffprobe's format name, the extension
@@ -485,6 +497,17 @@ async function getProjectSegments(file) {
     }
 }
 
+// Until when to wait because the video is being worked on in LosslessCut,
+//  undefined if it isn't
+async function editedUntil(file) {
+    const project = projectPath(file);
+    const st = await fsp.stat(project).catch(() => undefined);
+    if (!st) return undefined;
+    const projectText = await fsp.readFile(project, 'utf8').catch(() => undefined);
+    return isBeingEdited({ projectText, projectMtimeMs: st.mtimeMs, now: Date.now(), quietMs: config.editQuietMs })
+        ? st.mtimeMs + config.editQuietMs : undefined;
+}
+
 async function readLosslessCutConfig() {
     try {
         return JSON.parse(await fsp.readFile(config.losslessCutConfig, 'utf8')) || {};
@@ -539,7 +562,7 @@ const state = {
     recent: [], // { file, output, ok, error, at, seconds }
 };
 const seen = new Map(); // file -> { size, mtimeMs } at the previous scan
-const postponed = new Map(); // file -> time: open in another program, wait until then
+const postponed = new Map(); // file -> { until, reason }: wait until then
 let queue = [];
 let current;
 let scanning = false;
@@ -656,7 +679,7 @@ async function scan() {
         }
         if (changed) await saveState();
         for (const file of seen.keys()) if (!found.has(file)) seen.delete(file);
-        for (const [file, until] of postponed) if (!found.has(file) || until <= Date.now()) postponed.delete(file);
+        for (const [file, { until }] of postponed) if (!found.has(file) || until <= Date.now()) postponed.delete(file);
         queue = queue.filter((file) => found.has(file));
 
         const now = Date.now();
@@ -774,10 +797,16 @@ async function cleanup(file) {
 async function trimNext(file) {
     const st = await fsp.stat(file).then(statKey, () => undefined);
     if (!st) return;
+    const edited = await editedUntil(file);
+    if (edited != null) {
+        log(`waiting, edited in LosslessCut: ${file}`);
+        // The regular scans queue it again once it's quiet
+        postponed.set(file, { until: edited, reason: 'edited in LosslessCut' });
+        return;
+    }
     if (await isOpenElsewhere(file)) {
-        // e.g. open in LosslessCut: try again at the next regular scan
-        log(`skipped for now, open in another program: ${file}`);
-        postponed.set(file, Date.now() + config.intervalMs);
+        log(`waiting, open in another program: ${file}`);
+        postponed.set(file, { until: Date.now() + config.intervalMs, reason: 'open in another program' });
         return;
     }
     const started = Date.now();
@@ -860,6 +889,9 @@ function status() {
         lastScan,
         current: current && { ...current, name: path.basename(current.file) },
         queue: queue.map((file) => ({ file, name: path.basename(file) })),
+        waiting: [...postponed].map(([file, { until, reason }]) => ({
+            file, name: path.basename(file), reason, until: new Date(until).toISOString(),
+        })),
         recent: state.recent.map((r) => ({ ...r, name: path.basename(r.file), outputName: r.output && path.basename(r.output) })),
         failed,
     };
@@ -942,6 +974,7 @@ async function main() {
 module.exports = {
     parseJson5,
     isSettled,
+    isBeingEdited,
     getOutFormat,
     shouldCopyStream,
     getCutArgs,

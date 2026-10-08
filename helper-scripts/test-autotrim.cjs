@@ -133,6 +133,21 @@ test('copies in progress are not picked', () => {
     assert.equal(at.isSettled({ previous: fresh, current: fresh, now, settleMs: 30000 }), false, 'modified 1s ago');
 });
 
+test('videos being edited in LosslessCut wait', () => {
+    const now = 1000000;
+    const quietMs = 600000;
+    const generated = '{\n  "version": 2,\n  "generatedBy": "docker-losslesscut filename-segments",\n  "cutSegments": []}';
+    const saved = "{\n  version: 2,\n  mediaFileName: 'x.mp4',\n  cutSegments: [],\n}";
+    assert.equal(at.isBeingEdited({ projectText: saved, projectMtimeMs: now - 60000, now, quietMs }), true, 'saved by LosslessCut 1 min ago');
+    assert.equal(at.isBeingEdited({ projectText: saved, projectMtimeMs: now - 700000, now, quietMs }), false, 'quiet for 11 min');
+    assert.equal(at.isBeingEdited({ projectText: generated, projectMtimeMs: now - 1000, now, quietMs }), false, 'generated, not opened');
+    assert.equal(at.isBeingEdited({ projectText: undefined, projectMtimeMs: now, now, quietMs }), false, 'no project file');
+    // The generator's marker, as written by filename-segments
+    const script = fs.readFileSync(path.join(root, 'rootfs/opt/losslesscut-tools/filename-segments'), 'utf8');
+    assert.match(script, /"generatedBy": "%s"/);
+    assert.match(script, /^MARKER="docker-losslesscut filename-segments"$/m);
+});
+
 test('short error messages', () => {
     assert.equal(at.cleanError('[mov,mp4,m4a,3gp,3g2,mj2 @ 0x5610169aa0c0] moov atom not found /medias/a b/[0-3]x.mp4: Invalid data', '/medias/a b/[0-3]x.mp4'),
         'moov atom not found [0-3]x.mp4: Invalid data');

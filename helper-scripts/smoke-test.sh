@@ -391,12 +391,12 @@ duration="$(media_duration '/medias/auto/AUTO TWO-trimmed.mp4')"
 between "$duration" 19 21 || fail "the existing AUTO TWO-trimmed.mp4 was overwritten"
 check_trashed '/medias/auto/[2-5,8-end]auto one.mp4'
 check_trashed '/medias/auto/[0-3]auto two.mp4'
-logs="$(docker logs "$NAME" 2>&1)"
-grep '\[autotrim' <<< "$logs" | sed 's/^/  /'
+autotrim_logs="$(docker logs "$NAME" 2>&1 | grep '\[autotrim')" || fail "no auto-trim log"
+while IFS= read -r line; do echo "  $line"; done <<< "$autotrim_logs"
 # One at a time: each trim ends before the next one starts
-concurrent="$(grep '\[autotrim' <<< "$logs" | awk '/ trimming /{n++; if (n > m) m = n} / (done|failed|cancelled) /{n--} END {print m + 0}')"
+concurrent="$(awk '/ trimming /{n++; if (n > m) m = n} / (done|failed|cancelled) /{n--} END {print m + 0}' <<< "$autotrim_logs")"
 [[ "$concurrent" == 1 ]] || fail "$concurrent trims at the same time, expected 1"
-if grep '\[autotrim' <<< "$logs" | grep -q ' failed '; then fail "a background trim failed"; fi
+if grep -q ' failed ' <<< "$autotrim_logs"; then fail "a background trim failed"; fi
 if command -v node >/dev/null \
     && node -e "try { require.resolve('playwright-core') } catch { require.resolve('playwright') }" 2>/dev/null; then
     log "Checking the side panel in a browser"
